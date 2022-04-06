@@ -1,0 +1,11 @@
+#!/bin/bash
+#SBATCH --partition=allgpu
+#SBATCH --time=0-01:00:00
+#SBATCH --nodes=1
+#SBATCH --chdir=/home/kulvaitv/git/syrec
+#SBATCH --job-name=reconstruct2D
+#SBATCH --output=log/first-%N-%j.out
+#SBATCH --error=log/first-%N-%j.err
+source initAstra
+#./reconstructSlice.py $1 --force --gpu --cgls --verbose --savetiff --output-folder $2
+./reconstructSliceAstra.py $1 --force --gpu --fbp --verbose --savetiff --output-folder $2
