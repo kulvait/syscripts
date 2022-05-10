@@ -36,6 +36,7 @@ parser.add_argument("--gpu", action="store_true")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--saveden", action="store_true")
 parser.add_argument("--savetiff", action="store_true")
+parser.add_argument("--neglog", action="store_true")
 parser.add_argument("--suffix", default="")
 parser.add_argument("--output-folder", default=".")
 parser.add_argument("--itterations", default=100)
@@ -47,7 +48,7 @@ parser.add_argument('--volume-sizey', help="Volume dimension y.", type=int, defa
 parser.add_argument('--volume-sizez', help="Volume dimension z.", type=int, default=1024)
 parser.add_argument('--first-index', type=int, default=None)
 parser.add_argument('--last-index', type=int, default=None)
-
+parser.add_argument("--angles-mat", type=str, default=None, help="Sequence of angles stored in mat file.")
 
 
 ARG = parser.parse_args([inputFolder, "--output-folder", outputFolder, "--force", "--gpu", "--sirt", "--verbose", "--saveden", "--first-index", "450", "--last-index", "460"])
@@ -186,15 +187,18 @@ proj_geom = astra.create_proj_geom('parallel3d_vec', row_count, col_count, vecto
 #Contrary to what doc say it needs to be like this
 #Coordinate order: row (v), angle, column (u)
 #see https://github.com/astra-toolbox/astra-toolbox/blob/master/samples/python/s006_3d_data.py
-projectionData = np.empty((row_count, angles_count, col_count), order="F", dtype="float32")
+projectionData = np.zeros(shape=(row_count, angles_count, col_count), dtype="float32")
 for i in range(row_count):
     tif=TIFF.open(tifFiles[i])
     sin=tif.read_image()
     sin=transformToExtinction(sin)
     #projectionData[:,:,i] = np.transpose(sin)
     projectionData[i,:,:] = sin
-    if i % 10 == 0:
+    if ARG.verbose and i % 10 == 0:
         print("Just read %d-th/%d projectionData of %s"%(i+1, row_count, tifFiles[i]))
+if ARG.neglog:
+	projectionData = np.log(np.reciprocal(projectionData))
+
 if ARG.verbose:
     print("Transformed projections of dimensions %dx%dx%d and dtype=%s with min=%f, max=%f, mean=%f."%(projectionData.shape[0], projectionData.shape[1], projectionData.shape[2], projectionData.dtype, projectionData.min(), projectionData.max(), projectionData.mean()))
 
