@@ -47,6 +47,7 @@ parser.add_argument("--output-folder", default=".")
 parser.add_argument("--store-projections", default=None)
 parser.add_argument("--angles-mat", default=None)
 parser.add_argument("--offset-mat", default=None)
+parser.add_argument("--offset-x", default=0.0, type=float)
 parser.add_argument("--itterations", type=int, default=100)
 parser.add_argument("--platform-id", type=str, default="0:0")
 #parser.add_argument('--box-sizex',
@@ -106,7 +107,7 @@ parser.add_argument("--detector-center-offsetvy", type=float, default=0., help="
 recoFolder = "/home/kulvaitv/exp/PtNiWire/processed/ivw0032_Referenz_blau_4_000/reco"
 ARG = parser.parse_args([inputFolder, "--output-folder", outputFolder, "--force", "--gpu", "--fbp", "--verbose", "--saveden", "--yrange-from", "450", "--yrange-to", "460", "--store-projections", "prj.den", "--angles-mat", os.path.join(recoFolder, "angles.mat"), "--offset-mat", os.path.join(recoFolder, "offset_shift.mat"), "--volume-sizex", "2048", "--volume-sizey", "2048", "--neglog"])
 
-#ARG = parser.parse_args()
+ARG = parser.parse_args()
 #sin=sin[1::2]
 #angles=angles[1::2]
 
@@ -279,29 +280,7 @@ min_py = -0.5 * ARG.pixel_sizey * row_count
 max_py = 0.5 * ARG.pixel_sizey * row_count
 detector_centers_x = np.linspace(min_px + 0.5* ARG.pixel_sizex, max_px- 0.5* ARG.pixel_sizex, col_count)
 detector_centers_y = np.linspace(min_py + 0.5* ARG.pixel_sizey, max_py -0.5 * ARG.pixel_sizey, row_count)
-
-#Create projection data
-partition = odl.nonuniform_partition(angles, detector_centers_x, detector_centers_y)
-tspace = odl.space.space_utils.rn(partition.shape, dtype='float32')
-ds = odl.discr.discr_space.DiscretizedSpace(partition, tspace)
-projectionData_element = ds.element()
-with odl.util.utility.writable_array(projectionData_element) as projectionData:
-	for i in range(len(tifFiles)):
-		f = tifFiles[i]
-		img = TIFF.open(f)
-		img = img.read_image()
-		if ARG.yrange_from is not None:
-			img = img[ARG.yrange_from:ARG.yrange_to, :]
-		if ARG.neglog:
-			projectionData[i] = np.log(np.reciprocal(np.transpose(img)))
-		else:
-			projectionData[i] = np.transpose(img)
-		if ARG.verbose and i % 10 == 0:
-			print("Read file %d of %d" % (i + 1, len(tifFiles)))
-	if ARG.store_projections is not None:
-		denFile = os.path.join(ARG.output_folder, ARG.store_projections)
-		writeDenProjections(projectionData, denFile, force=ARG.force)
-		#DEN.storeNdarrayAsDEN(denFile, projectionData, force=ARG.force)
+print("Pixel sizes = [%f, %f]"%(ARG.pixel_sizex, ARG.pixel_sizey))
 
 # Reconstruction space: discretized functions on the cube
 # [-20, 20]^3 with 300 samples per dimension.
@@ -352,12 +331,41 @@ angle_partition = odl.nonuniform_partition(angles)
 detector_partition = odl.nonuniform_partition(detector_centers_x, detector_centers_y)
 offset=[0,0,0]
 if ARG.offset_mat is not None:
+	print("Loading offset from %s"%(ARG.offset_mat))
 	matlab_dic = scipy.io.loadmat(ARG.offset_mat)
-	offset[0] = matlab_dic["offset_shift"][0][0]
+	print(matlab_dic["offset_shift"][0][0])
+	offset[0] = matlab_dic["offset_shift"][0][0]*ARG.pixel_sizex
+else:
+	offset[0] = ARG.offset_x*ARG.pixel_sizex
+	#offset[0] = -ARG.offset_x
 print("offset: %s"%(offset))
-geometry = odl.tomo.Parallel3dAxisGeometry(angle_partition, detector_partition, axis=[0, 0, 1], translation=offset)
+geometry = odl.tomo.Parallel3dAxisGeometry(angle_partition, detector_partition, axis=[0 , 0, 1], det_pos_init=[offset[0],offset[1],offset[2]])
 
 ray_trafo = odl.tomo.RayTransform(reco_space, geometry, impl='astra_cuda')
+
+#Create projection data
+partition = odl.nonuniform_partition(angles, detector_centers_x, detector_centers_y)
+tspace = odl.space.space_utils.rn(partition.shape, dtype='float32')
+ds = odl.discr.discr_space.DiscretizedSpace(partition, tspace)
+projectionData_element = ds.element()
+with odl.util.utility.writable_array(projectionData_element) as projectionData:
+	for i in range(len(tifFiles)):
+		f = tifFiles[i]
+		img = TIFF.open(f)
+		img = img.read_image()
+		if ARG.yrange_from is not None:
+			img = img[ARG.yrange_from:ARG.yrange_to, :]
+		if ARG.neglog:
+			projectionData[i] = np.log(np.reciprocal(np.transpose(img)))
+		else:
+			projectionData[i] = np.transpose(img)
+		if ARG.verbose and i % 10 == 0:
+			print("Read file %d of %d" % (i + 1, len(tifFiles)))
+	if ARG.store_projections is not None:
+		denFile = os.path.join(ARG.output_folder, ARG.store_projections)
+		writeDenProjections(projectionData, denFile, force=ARG.force)
+		#DEN.storeNdarrayAsDEN(denFile, projectionData, force=ARG.force)
+
 
 
 #distance between the centers of two adjacent detector pixels
