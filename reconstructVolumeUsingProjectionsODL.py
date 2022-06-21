@@ -5,13 +5,13 @@ Created on Fri Feb 11 11:05:28 2022
 @author: Vojtech Kulvait
 """
 
-import astra
+import numpy as np
+import odl
 #import mpi#Volume decomposition
 
 import os
 import argparse
 from libtiff import TIFF
-import numpy as np
 from denpy import DEN
 from PIL import Image
 import re
@@ -27,7 +27,7 @@ outputFolder = "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric0
 inputFolder = "/asap3/petra3/gpfs/p07/2020/data/11009431/processed/bric022_369_a/trans03"
 
 inputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/ivw0032_Referenz_blau_4_000/flat_corrected/rawBin2"
-outputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/kulvait_scratch/ivw0032_Referenz_blau_4_000/astra"
+outputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/kulvait_scratch/ivw0032_Referenz_blau_4_000/odl"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFolder")
@@ -46,6 +46,7 @@ parser.add_argument("--suffix", default="")
 parser.add_argument("--output-folder", default=".")
 parser.add_argument("--store-projections", default=None)
 parser.add_argument("--angles-mat", default=None)
+parser.add_argument("--offset-mat", default=None)
 parser.add_argument("--itterations", type=int, default=100)
 parser.add_argument("--platform-id", type=str, default="0:0")
 #parser.add_argument('--box-sizex',
@@ -61,13 +62,17 @@ parser.add_argument("--platform-id", type=str, default="0:0")
 #                    type=float,
 #                    default=5.0)
 parser.add_argument('--voxel-sizex',
-                    help="Volume dimension x.",
+                    help="Voxel size x, defaults to pixel-sizex.",
                     type=float,
-                    default=0.0125)
+                    default=None)
 parser.add_argument('--voxel-sizey',
-                    help="Volume dimension y.",
+                    help="Voxel size y, defaults to pixel-sizex.",
                     type=float,
-                    default=0.0125)
+                    default=None)
+parser.add_argument('--voxel-sizez',
+                    help="Voxel size z, defaults to pixel-sizey.",
+                    type=float,
+                    default=None)
 parser.add_argument('--volume-sizex',
                     help="Volume dimension x.",
                     type=int,
@@ -76,10 +81,10 @@ parser.add_argument('--volume-sizey',
                     help="Volume dimension y.",
                     type=int,
                     default=1024)
-#parser.add_argument('--volume-sizez',
-#                    help="Volume dimension z.",
-#                    type=int,
-#                    default=1024)
+parser.add_argument('--volume-sizez',
+                    help="Volume dimension z, defaults to number of rows in input projection data",
+                    type=int,
+                    default=None)
 parser.add_argument('--pixel-sizex',
                     help="Detector dimension x.",
                     type=float,
@@ -98,9 +103,10 @@ parser.add_argument("--detector-center-offsetvy", type=float, default=0., help="
 #    "--verbose", "--yrange-from", "500", "--yrange-to", "530", "--itterations", "40", "--saveden"
 #])
 #Previous do not work and the following works
-#ARG = parser.parse_args([inputFolder, "--output-folder", outputFolder, "--force", "--gpu", "--fbp", "--verbose", "--saveden", "--first-index", "450", "--last-index", "460"])
+recoFolder = "/home/kulvaitv/exp/PtNiWire/processed/ivw0032_Referenz_blau_4_000/reco"
+ARG = parser.parse_args([inputFolder, "--output-folder", outputFolder, "--force", "--gpu", "--fbp", "--verbose", "--saveden", "--yrange-from", "450", "--yrange-to", "460", "--store-projections", "prj.den", "--angles-mat", os.path.join(recoFolder, "angles.mat"), "--offset-mat", os.path.join(recoFolder, "offset_shift.mat"), "--volume-sizex", "2048", "--volume-sizey", "2048", "--neglog"])
 
-ARG = parser.parse_args()
+#ARG = parser.parse_args()
 #sin=sin[1::2]
 #angles=angles[1::2]
 
@@ -117,7 +123,6 @@ def parsePlatformString(platformId):
 	return int(tk[1])
 
 gpuid = parsePlatformString(ARG.platform_id)
-astra.astra.set_gpu_index(gpuid)
 
 def getFileNum(filePath):
 	numberSearch = re.search(r"(\d*).tif", filePath)
@@ -155,17 +160,30 @@ def parseParamFile(logFile):
 
 
 def writeDenFile(volume, denFile, force=False):
-	if os.path.exists(denFile):
-		if force:
-			os.remove(denFile)
-		else:
-			raise IOError("File %s exists, add force to overwrite" % (denFile))
-	dimy = volume.shape[1]
-	dimx = volume.shape[2]
-	dimz = volume.shape[0]
-	DEN.writeEmptyDEN(denFile, [dimx, dimy, dimz], force=force)
-	for k in range(dimz):
-		DEN.writeFrame(denFile, k, volume[k, :, :], force=force)
+    if os.path.exists(denFile):
+        if force:
+            os.remove(denFile)
+        else:
+            raise IOError("File %s exists, add force to overwrite" % (denFile))
+    dimx = volume.shape[0]
+    dimy = volume.shape[1]
+    dimz = volume.shape[2]
+    DEN.writeEmptyDEN(denFile, [dimx, dimy, dimz], force=force)
+    for k in range(dimz):
+        DEN.writeFrame(denFile, k, np.flip(np.transpose(volume[:, :, k]), 0), force=force)
+
+def writeDenProjections(com, denFile, force=False):
+    if os.path.exists(denFile):
+        if force:
+            os.remove(denFile)
+        else:
+            raise IOError("File %s exists, add force to overwrite" % (denFile))
+    dimy = com.shape[2]
+    dimx = com.shape[1]
+    dimz = com.shape[0]
+    DEN.writeEmptyDEN(denFile, [dimx, dimy, dimz], force=force)
+    for k in range(dimz):
+        DEN.writeFrame(denFile, k, np.transpose(com[k, :, :]), force=force)
 
 
 def createProjectorConfig(projectorName, projectionsID, volumeID, usegpu=True):
@@ -229,7 +247,10 @@ tifFiles = glob.glob(pth)
 tifFiles.sort()
 tif = TIFF.open(tifFiles[0])
 img = tif.read_image()
-row_count = img.shape[0]
+if ARG.yrange_from is not None:
+	row_count = ARG.yrange_to - ARG.yrange_from
+else:
+	row_count = img.shape[0]
 col_count = img.shape[1]
 angles_count = len(tifFiles)
 if ARG.verbose:
@@ -237,83 +258,81 @@ if ARG.verbose:
     "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
     % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
        img.max(), img.mean()))
-projectionData = np.zeros(shape=(row_count, angles_count, col_count), dtype=np.float32)
-for i in range(len(tifFiles)):
-    f = tifFiles[i]
-    img = TIFF.open(f)
-    img = img.read_image()
-    projectionData[:,i,:] = img 
-    if ARG.verbose and i % 10 == 0:
-        print("Read file %d of %d" % (i + 1, len(tifFiles)))
-if ARG.neglog:
-	projectionData = np.log(np.reciprocal(projectionData))
-if ARG.yrange_from is not None:
-	projectionData = projectionData[ARG.yrange_from:ARG.yrange_to, :, :]
-	row_count = ARG.yrange_to - ARG.yrange_from
-if ARG.store_projections is not None:
-	DEN.storeNdarrayAsDEN(os.path.join(ARG.output_folder, ARG.store_projections), np.swapaxes(projectionData, 0, 1), force=ARG.force)
-#Now I created structure with projections let's focus on angles
+
+#First I need to specify vectors of discretization of detector and angles
+#angles
 if ARG.angles_mat is not None:
 	matlab_dic = scipy.io.loadmat(ARG.angles_mat)
 	angles = matlab_dic["angles"]
+	angles = angles.reshape((angles.shape[0]))#It is array of the shape (angles.shape[0], 1) and ODL does not like it
+	if len(angles) != angles_count:
+		print("INCOMPATIBLE ANGLES DIMENSIONS!")
+		os.sys.exit(1)
 else:
 	angles = np.linspace(
 	    0, 2 * np.pi, angles_count,
 	    endpoint=False)  #Equally spaced values which has sin.shape[0] voids
+#Detector dimensions from projection data
+min_px = -0.5 * ARG.pixel_sizex * col_count
+max_px = 0.5 * ARG.pixel_sizex * col_count 
+min_py = -0.5 * ARG.pixel_sizey * row_count
+max_py = 0.5 * ARG.pixel_sizey * row_count
+detector_centers_x = np.linspace(min_px + 0.5* ARG.pixel_sizex, max_px- 0.5* ARG.pixel_sizex, col_count)
+detector_centers_y = np.linspace(min_py + 0.5* ARG.pixel_sizey, max_py -0.5 * ARG.pixel_sizey, row_count)
 
-#Geometry setup
-if len(angles) != angles_count:
-	print("INCOMPATIBLE ANGLES DIMENSIONS!")
-	os.sys.exit(1)
-vectors = generateAstraParallel3d_vec(angles, ARG.pixel_sizex,
-                                                ARG.pixel_sizey, ARG.detector_center_offsetvx, ARG.detector_center_offsetvy)
-proj_geom = astra.create_proj_geom('parallel3d_vec', row_count, col_count,
-                                   vectors)
-#logFile = getReconLog(tifFiles[0])
-#print("Using logFile %s"%(logFile))
-#dct = parseParamFile(logFile)
-#det_width = float(dct["scan_pixelsize"])
-#det_height = float(dct["scan_pixelsize"])
+#Create projection data
+partition = odl.nonuniform_partition(angles, detector_centers_x, detector_centers_y)
+tspace = odl.space.space_utils.rn(partition.shape, dtype='float32')
+ds = odl.discr.discr_space.DiscretizedSpace(partition, tspace)
+projectionData_element = ds.element()
+with odl.util.utility.writable_array(projectionData_element) as projectionData:
+	for i in range(len(tifFiles)):
+		f = tifFiles[i]
+		img = TIFF.open(f)
+		img = img.read_image()
+		if ARG.yrange_from is not None:
+			img = img[ARG.yrange_from:ARG.yrange_to, :]
+		if ARG.neglog:
+			projectionData[i] = np.log(np.reciprocal(np.transpose(img)))
+		else:
+			projectionData[i] = np.transpose(img)
+		if ARG.verbose and i % 10 == 0:
+			print("Read file %d of %d" % (i + 1, len(tifFiles)))
+	if ARG.store_projections is not None:
+		denFile = os.path.join(ARG.output_folder, ARG.store_projections)
+		writeDenProjections(projectionData, denFile, force=ARG.force)
+		#DEN.storeNdarrayAsDEN(denFile, projectionData, force=ARG.force)
 
-#The same as the following
-#proj_geom = astra.create_proj_geom('parallel3d', det_width, det_height, row_count, col_count, angles)
-#Projections read
-#a matrix: the object is initialized with the contents of this matrix.
-#The matrix must be of size (u,angles,v), where u is the number of columns of the detector and v the number
-#of rows as defined in the projection geometry. It must be of class single, double or logical.
-#2D: (angles,u), where u is the number of detector pixels as defined in the projection geometry
-#projectionData = np.empty((col_count, angles_count, row_count))
-#Contrary to what doc say it needs to be like this
-#Coordinate order: row (v), angle, column (u)
-#see https://github.com/astra-toolbox/astra-toolbox/blob/master/samples/python/s006_3d_data.py
-
-#For 3D geometries there are no explicit projectors
-#The consequence is 3D projectors use only
-#raycasters that are configurable num
-
-sin_id = astra.data3d.create('-proj3d', proj_geom, projectionData)
-
-#distance between the centers of two adjacent detector pixels
-if ARG.verbose:
-	print(
-	    "Creating projector with det_width=%f and det_height=%f for %d angles."
-	    % (ARG.pixel_sizex, ARG.pixel_sizey, len(angles)))
-
+# Reconstruction space: discretized functions on the cube
+# [-20, 20]^3 with 300 samples per dimension.
 #In 3D
 #astra_create_proj_geom('parallel3d_vec',  det_row_count, det_col_count, vectors);
 #First try something small although number of detectors is 3927
-vx_count = 1024
-vy_count = 1024
-vz_count = row_count
-VOXELX = ARG.voxel_sizex
-VOXELY = ARG.voxel_sizex
-VOXELZ = ARG.pixel_sizey
+vx_count = ARG.volume_sizex
+vy_count = ARG.volume_sizey
+if ARG.volume_sizez is None:
+	vz_count = row_count
+else:
+	vz_count = ARG.volume_sizez
+if ARG.voxel_sizex is None:
+	VOXELX = ARG.pixel_sizex
+else:
+	VOXELX = ARG.voxel_sizex
+if ARG.voxel_sizey is None:
+	VOXELY = ARG.pixel_sizex
+else:
+	VOXELY = ARG.voxel_sizey
+if ARG.voxel_sizez is None:
+	VOXELZ = ARG.pixel_sizey
+else:
+	VOXELZ=ARG.voxel_sizez
 min_x = -0.5*vx_count*VOXELX
 max_x = 0.5*vx_count*VOXELX
 min_y = -0.5*vy_count*VOXELY
 max_y = 0.5*vy_count*VOXELY
-min_z = -0.5 * ARG.pixel_sizey * vz_count
-max_z = 0.5 * ARG.pixel_sizey * vz_count
+min_z = -0.5 * vz_count * VOXELZ
+max_z = 0.5 * vz_count * VOXELZ
+reco_space = odl.uniform_discr(min_pt=[min_x, min_y, min_z], max_pt=[max_x, max_y, max_z], shape=[vx_count, vy_count, vz_count], dtype='float32')
 
 #=======================OUTPUT VOLUME=========
 if not os.path.exists(ARG.output_folder):
@@ -328,62 +347,46 @@ if os.path.exists(outputFileName) and not ARG.force:
 	print("File %s exist, add --force to overwrite." % ARG.outputDEN)
 	os.sys.exit(1)
 
-vol_geom = astra.create_vol_geom(vy_count, vx_count, vz_count, min_x, max_x,
-                                 min_y, max_y, min_z, max_z)
-#To understand this order is useful to go https://www.astra-toolbox.com/apiref/creators.html
-#See https://github.com/astra-toolbox/astra-toolbox/issues/206
-#Basically volumes are defined by (y, x, z) while arrays used for initialization are defined as (z, y, x).
+#For now do no offsetting when defining geometry
+angle_partition = odl.nonuniform_partition(angles)
+detector_partition = odl.nonuniform_partition(detector_centers_x, detector_centers_y)
+offset=[0,0,0]
+if ARG.offset_mat is not None:
+	matlab_dic = scipy.io.loadmat(ARG.offset_mat)
+	offset[0] = matlab_dic["offset_shift"][0][0]
+print("offset: %s"%(offset))
+geometry = odl.tomo.Parallel3dAxisGeometry(angle_partition, detector_partition, axis=[0, 0, 1], translation=offset)
 
-vol_id = astra.data3d.create('-vol', vol_geom, 0.0)
-#Following functionality only in unmerged branch
-#https://github.com/astra-toolbox/astra-toolbox/discussions/314
-#https://people.compute.dtu.dk/pcha/HDtomo/SC/Week2Day4.pdf
-#proj_geom, vol_geom = astra.mpi.create(proj_geom, vol_geom)
-#In 3D
-#vol_geom = astra_create_vol_geom(row_count, col_count, slice_count, min_x, max_x, min_y, max_y, min_z, max_z);
-#vol_id = astra_mex_data3d('create', '-vol', vol_geom);
+ray_trafo = odl.tomo.RayTransform(reco_space, geometry, impl='astra_cuda')
 
-cfg = {}
-if ARG.cgls:
-	cfg = createProjectorConfig("CGLS3D", sin_id, vol_id, ARG.gpu)
-elif ARG.sirt:
-	cfg = createProjectorConfig("SIRT3D", sin_id, vol_id, ARG.gpu)
-elif ARG.fbp:
-	cfg = createProjectorConfig("BP3D", sin_id, vol_id, ARG.gpu)
 
-print("Creating %s algorithm" % cfg["type"])
-#cfg = {};
-#cfg["type"] = 'CGLS'
-#cfg["type"] = 'CGLS_GPU'
-#cfg["ProjectorId"] = proj_id;
-#cfg["ProjectionDataId"] = sin_id;
-#cfg["ReconstructionDataId"] = vol_id;
-cgls_id = astra.algorithm.create(cfg)
-print("Created algorithm")
+#distance between the centers of two adjacent detector pixels
+if ARG.verbose:
+	print(
+	    "Creating projector with det_width=%f and det_height=%f for %d angles."
+	    % (ARG.pixel_sizex, ARG.pixel_sizey, len(angles)))
+
+
 sec = time.time()
-if ARG.fbp:
-	astra.algorithm.run(cgls_id, 1)
-else:
-	astra.algorithm.run(cgls_id, ARG.itterations)
+if ARG.cgls:
+	print("Not yet implemented")
+elif ARG.sirt:
+	print("Not yet implemented")
+elif ARG.fbp:
+	print("FBP")
+	fbp = odl.tomo.fbp_op(ray_trafo, filter_type='Hann', frequency_scaling=0.8)
+	rec = fbp(projectionData_element)
 print("Getting volume")
-volume = astra.data3d.get(vol_id)
-print("Output volume has dimensions %dx%dx%d and type %s" %
-      (volume.shape[0], volume.shape[1], volume.shape[2], volume.dtype))
-
-
-fullOutputName = os.path.join(ARG.output_folder, outputName)
-
-if ARG.saveden:
-	writeDenFile(volume, "%s.den" % (fullOutputName), ARG.force)
-if ARG.savetiff:
-	im = Image.fromarray(volume, mode='F')  # float32
-	im.save("%s.tiff" % (fullOutputName), "TIFF")
+with odl.util.utility.writable_array(rec) as volume:
+	fullOutputName = os.path.join(ARG.output_folder, outputName)
+	print("Output volume has dimensions %dx%dx%d and type %s" % (volume.shape[0], volume.shape[1], volume.shape[2], volume.dtype))
+	if ARG.saveden:
+		writeDenFile(volume, "%s.den" % (fullOutputName), ARG.force)
+	if ARG.savetiff:
+		im = Image.fromarray(volume, mode='F')  # float32
+		im.save("%s.tiff" % (fullOutputName), "TIFF")
 sec = time.time() - sec
 print("Time %0.2fs"%(sec))
 
 with open("%s.log" % (fullOutputName), 'wt') as f:
 	json.dump(vars(ARG), f, indent=4)
-#garbage disposal
-astra.data3d.delete(sin_id)
-astra.data3d.delete(vol_id)
-astra.algorithm.delete(cgls_id)

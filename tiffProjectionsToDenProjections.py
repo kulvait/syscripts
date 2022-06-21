@@ -25,6 +25,7 @@ parser.add_argument("--neglog", action="store_true")
 parser.add_argument('--first-index', type=int, default=None)
 parser.add_argument('--last-index', type=int, default=None)
 parser.add_argument('--slab-width', type=int, default=None)
+parser.add_argument('--suffix', type=str, default="")
 
 ARG = parser.parse_args([
     "/asap3/petra3/gpfs/p07/2020/data/11009431/processed/bric022_369_a/trans03/",
@@ -108,15 +109,15 @@ def writeSlabs(ARG, tifFiles, outputDen, force=None):
 	if ARG.slab_width is not None:
 		for i in range(0, row_count, ARG.slab_width):
 			fileName = slabFileName(ARG.outputDen, i, i+ARG.slab_width)
-			DEN.storeNdarrayAsDEN(fileName, images[:,i:i+ARG.slab_width,:], force)
+			DEN.storeNdarrayAsDEN(fileName, images[:,i:i+ARG.slab_width,:], force=force)
 	else:
-		DEN.storeNdarrayAsDEN(outputDen, images, force)
+		DEN.storeNdarrayAsDEN(outputDen, images, force=force)
 
 def slabFileName(origName, fromID, toID):
 	f = origName.rsplit('.', 1)
 	fileName = "%sfrom_%05d_to_%05d"%(f[0], fromID, toID);
 	if len(f) == 2:
-		fileName = "%s.%s"%(fileName, f[1])
+		fileName = "%s%s.%s"%(fileName, ARG.suffix, f[1])
 	return fileName
 
 if ARG.verbose:
