@@ -167,6 +167,22 @@ def writeDenFile(volume, denFile, force=False):
 	for k in range(dimz):
 		DEN.writeFrame(denFile, k, volume[k, :, :], force=force)
 
+def writeTiffFiles(volume, tiffFilePattern, force=False):
+	dimy = volume.shape[1]
+	dimx = volume.shape[2]
+	dimz = volume.shape[0]
+	for k in range(dimz):
+		if ARG.yrange_from is not None:
+			tiffFile = "%s_%05d.tiff" % (tiffFilePattern, k + ARG.yrange_from)
+		else:
+			tiffFile = "%s_%05d.tiff" % (tiffFilePattern, k)
+		if os.path.exists(tiffFile):
+			if force:
+				os.remove(tiffFile)
+			else:
+				raise IOError("File %s exists, add force to overwrite" % (tiffFile))
+		im = Image.fromarray(volume[k,:,:], mode='F')  # float32
+		im.save(tiffFile, "TIFF")
 
 def createProjectorConfig(projectorName, projectionsID, volumeID, usegpu=True):
 	#cfg = {}
@@ -237,19 +253,20 @@ if ARG.verbose:
     "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
     % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
        img.max(), img.mean()))
+if ARG.yrange_from is not None:
+	row_count = ARG.yrange_to - ARG.yrange_from
 projectionData = np.zeros(shape=(row_count, angles_count, col_count), dtype=np.float32)
 for i in range(len(tifFiles)):
-    f = tifFiles[i]
-    img = TIFF.open(f)
-    img = img.read_image()
-    projectionData[:,i,:] = img 
-    if ARG.verbose and i % 10 == 0:
-        print("Read file %d of %d" % (i + 1, len(tifFiles)))
-if ARG.neglog:
-	projectionData = np.log(np.reciprocal(projectionData))
-if ARG.yrange_from is not None:
-	projectionData = projectionData[ARG.yrange_from:ARG.yrange_to, :, :]
-	row_count = ARG.yrange_to - ARG.yrange_from
+	f = tifFiles[i]
+	img = TIFF.open(f)
+	img = img.read_image()
+	if ARG.yrange_from is not None:
+		img = img[ARG.yrange_from:ARG.yrange_to, :]
+	if ARG.neglog:
+		img = np.log(np.reciprocal(img))
+	projectionData[:,i,:] = img 
+	if ARG.verbose and i % 10 == 0:
+		print("Read file %d of %d" % (i + 1, len(tifFiles)))
 if ARG.store_projections is not None:
 	DEN.storeNdarrayAsDEN(os.path.join(ARG.output_folder, ARG.store_projections), np.swapaxes(projectionData, 0, 1), force=ARG.force)
 #Now I created structure with projections let's focus on angles
@@ -376,8 +393,7 @@ fullOutputName = os.path.join(ARG.output_folder, outputName)
 if ARG.saveden:
 	writeDenFile(volume, "%s.den" % (fullOutputName), ARG.force)
 if ARG.savetiff:
-	im = Image.fromarray(volume, mode='F')  # float32
-	im.save("%s.tiff" % (fullOutputName), "TIFF")
+	writeTiffFiles(volume, fullOutputName, ARG.force)
 sec = time.time() - sec
 print("Time %0.2fs"%(sec))
 

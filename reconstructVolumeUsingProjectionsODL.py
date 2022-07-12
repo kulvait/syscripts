@@ -34,7 +34,7 @@ parser.add_argument("inputFolder")
 parser.add_argument("--cgls", action="store_true")
 parser.add_argument("--sirt", action="store_true")
 parser.add_argument("--sart", action="store_true")
-parser.add_argument("--em", action="store_true")
+parser.add_argument("--btv", action="store_true", help="Bregman-TV according to https://github.com/odlgroup/odl/blob/master/examples/solvers/bregman_tv_tomography.py")
 parser.add_argument("--fbp", action="store_true")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--gpu", action="store_true")
@@ -159,6 +159,22 @@ def parseParamFile(logFile):
 		return dct
 	return None
 
+def writeTiffFiles(volume, tiffFilePattern, force=False):
+	dimx = volume.shape[0]
+	dimy = volume.shape[1]
+	dimz = volume.shape[2]
+	for k in range(dimz):
+		if ARG.yrange_from is not None:
+			tiffFile = "%s_%05d.tiff" % (tiffFilePattern, k + ARG.yrange_from)
+		else:
+			tiffFile = "%s_%05d.tiff" % (tiffFilePattern, k)
+		if os.path.exists(tiffFile):
+			if force:
+				os.remove(tiffFile)
+			else:
+				raise IOError("File %s exists, add force to overwrite" % (tiffFile))
+		im = Image.fromarray(np.flip(np.transpose(volume[:,:,k])), mode='F')  # float32
+		im.save(tiffFile, "TIFF")
 
 def writeDenFile(volume, denFile, force=False):
     if os.path.exists(denFile):
@@ -273,6 +289,9 @@ else:
 	angles = np.linspace(
 	    0, 2 * np.pi, angles_count,
 	    endpoint=False)  #Equally spaced values which has sin.shape[0] voids
+	angles = np.linspace(
+	    0, np.pi, angles_count,
+	    endpoint=False)  #Equally spaced values which has sin.shape[0] voids
 #Detector dimensions from projection data
 min_px = -0.5 * ARG.pixel_sizex * col_count
 max_px = 0.5 * ARG.pixel_sizex * col_count 
@@ -384,6 +403,66 @@ elif ARG.fbp:
 	print("FBP")
 	fbp = odl.tomo.fbp_op(ray_trafo, filter_type='Hann', frequency_scaling=0.8)
 	rec = fbp(projectionData_element)
+elif ARG.btv:
+	# Components for variational problem: l2-squared data matching and isotropic
+	# TV-regularization
+	l2_norm = 0.5 * odl.solvers.L2NormSquared(ray_trafo.range).translated(projectionData_element)
+	gradient = odl.Gradient(reco_space)
+	reg_param = 0.3 #Overregularization
+	reg_param = 0.03
+	reg_param = 0.003
+	reg_param = 0.0003
+	reg_param = 0.00003
+	reg_param = 0.000003
+	reg_param = 0.0000003
+	reg_param = 0.00000003
+	reg_param = 0.000000003
+	l12_norm = reg_param * odl.solvers.GroupL1Norm(gradient.range)
+	# Assemble functionals and operators for the optimization algorithm
+	f = odl.solvers.ZeroFunctional(reco_space)  # No f functional used, set to zero
+	g = [l2_norm, l12_norm]
+	L = [ray_trafo, gradient]
+	# Estimated operator norms, which are used to ensure that we fulfill the
+	# convergence criteria of the optimization algorithm
+	ray_trafo_norm = odl.power_method_opnorm(ray_trafo, maxiter=20)
+	gradient_norm = odl.power_method_opnorm(gradient, maxiter=20)
+	# Parameters for the optimization method; tuned in order to reduce the number
+	# of inner iterations needed to solve the first step in the Bregman iterations
+	niter_inner = 200
+	tau = 0.01  # Step size for the primal variable
+	sigma_ray_trafo = 45.0 / ray_trafo_norm ** 2  # Step size for dual variable
+	sigma_gradient = 45.0 / gradient_norm ** 2  # Step size for dual variable
+	sigma = [sigma_ray_trafo, sigma_gradient]
+	# The reconstruction looks nice after about 5 outer iterations; set total
+	# number of outer iterations to 7 to show what happens if one does to many
+	niter_bregman = 7
+	niter_bregman = 5 #Or not since that takes too long
+	# Create initial guess and initial subgradient
+	x = reco_space.zero()
+	p = reco_space.zero()
+	# This defines the outer Bregman iterations
+	for breg_iter in range(niter_bregman):
+		print('Outer Bregman Iteration: {}'.format(breg_iter))
+		# Create the affine part of the Bregman functional
+		constant = l12_norm(gradient(x))
+		print("1")
+		linear_part = reg_param * odl.solvers.QuadraticForm(vector=-p, constant=constant)
+		print("2")
+		callback_inner = odl.solvers.CallbackPrintIteration(step=50)
+		print("3")
+		# Inner iterations; x is updated in-place with the consecutive iterates
+		odl.solvers.forward_backward_pd(
+        x=x, f=f, g=g, L=L, h=linear_part, tau=tau, sigma=sigma,
+        niter=niter_inner, callback=callback_inner)
+		print("4")
+		# Update the subgradient
+		p -= (1 / reg_param) * ray_trafo.adjoint(l2_norm.gradient(ray_trafo(x)))
+		print("5")
+		# Display the result after this iteration
+		#x.show(title='Outer Bregman Iteration {}'.format(breg_iter),force_show=True)
+	rec = x
+
+
 print("Getting volume")
 with odl.util.utility.writable_array(rec) as volume:
 	fullOutputName = os.path.join(ARG.output_folder, outputName)
@@ -391,8 +470,7 @@ with odl.util.utility.writable_array(rec) as volume:
 	if ARG.saveden:
 		writeDenFile(volume, "%s.den" % (fullOutputName), ARG.force)
 	if ARG.savetiff:
-		im = Image.fromarray(volume, mode='F')  # float32
-		im.save("%s.tiff" % (fullOutputName), "TIFF")
+		writeTiffFiles(volume, fullOutputName, ARG.force)
 sec = time.time() - sec
 print("Time %0.2fs"%(sec))
 
