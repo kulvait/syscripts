@@ -270,11 +270,6 @@ else:
 	row_count = img.shape[0]
 col_count = img.shape[1]
 angles_count = len(tifFiles)
-if ARG.verbose:
-    print(
-    "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
-    % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
-       img.max(), img.mean()))
 
 #First I need to specify vectors of discretization of detector and angles
 #angles
@@ -384,6 +379,8 @@ with odl.util.utility.writable_array(projectionData_element) as projectionData:
 		denFile = os.path.join(ARG.output_folder, ARG.store_projections)
 		writeDenProjections(projectionData, denFile, force=ARG.force)
 		#DEN.storeNdarrayAsDEN(denFile, projectionData, force=ARG.force)
+	if ARG.verbose:
+		print("The projection data has the dimensions %dx%dx%d and dtype=%s with min=%f, max=%f, mean=%f." % (projectionData.shape[0], projectionData.shape[1], projectionData.shape[2], projectionData.dtype, projectionData.min(), projectionData.max(), projectionData.mean()))
 
 
 
@@ -400,10 +397,11 @@ if ARG.cgls:
 elif ARG.sirt:
 	print("Not yet implemented")
 elif ARG.fbp:
-	print("FBP")
+	print("Start FBP")
 	fbp = odl.tomo.fbp_op(ray_trafo, filter_type='Hann', frequency_scaling=0.8)
 	rec = fbp(projectionData_element)
 elif ARG.btv:
+	print("Start Bregman-TV")
 	# Components for variational problem: l2-squared data matching and isotropic
 	# TV-regularization
 	l2_norm = 0.5 * odl.solvers.L2NormSquared(ray_trafo.range).translated(projectionData_element)
@@ -463,7 +461,7 @@ elif ARG.btv:
 	rec = x
 
 
-print("Getting volume")
+print("End reconstruction, get and write volume data.")
 with odl.util.utility.writable_array(rec) as volume:
 	fullOutputName = os.path.join(ARG.output_folder, outputName)
 	print("Output volume has dimensions %dx%dx%d and type %s" % (volume.shape[0], volume.shape[1], volume.shape[2], volume.dtype))

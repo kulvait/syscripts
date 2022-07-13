@@ -30,7 +30,7 @@ inputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/ivw0032_Referenz_blau_4_00
 outputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/kulvait_scratch/ivw0032_Referenz_blau_4_000/astra"
 
 parser = argparse.ArgumentParser()
-parser.add_argument("inputFolder")
+parser.add_argument("inputProjections", help="Input projection data. In case of file it is assumed to be den file with projections. In case of directory it is assumed to contain tif projections.")
 parser.add_argument("--cgls", action="store_true")
 parser.add_argument("--sirt", action="store_true")
 parser.add_argument("--sart", action="store_true")
@@ -93,13 +93,6 @@ parser.add_argument('--yrange-to', type=int, default=None)
 parser.add_argument("--detector-center-offsetvx", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
 parser.add_argument("--detector-center-offsetvy", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
 
-#ARG = parser.parse_args([
-#    inputFolder, "--output-folder", outputFolder, "--force", "--gpu", "--cgls",
-#    "--verbose", "--yrange-from", "500", "--yrange-to", "530", "--itterations", "40", "--saveden"
-#])
-#Previous do not work and the following works
-#ARG = parser.parse_args([inputFolder, "--output-folder", outputFolder, "--force", "--gpu", "--fbp", "--verbose", "--saveden", "--first-index", "450", "--last-index", "460"])
-
 ARG = parser.parse_args()
 #sin=sin[1::2]
 #angles=angles[1::2]
@@ -152,7 +145,6 @@ def parseParamFile(logFile):
 			dct[tokens[0].strip()] = tokens[1].strip()
 		return dct
 	return None
-
 
 def writeDenFile(volume, denFile, force=False):
 	if os.path.exists(denFile):
@@ -239,34 +231,48 @@ def transformToExtinction(invertedProjectionIntensities):
 #print("Log file is %s"%(logFile))
 #print(dct)
 #=================INPUT PROJECTION DATA===============
-pth=os.path.join(ARG.inputFolder, "*.tif")
-print("Openning path %s"%(pth))
-tifFiles = glob.glob(pth)
-tifFiles.sort()
-tif = TIFF.open(tifFiles[0])
-img = tif.read_image()
-row_count = img.shape[0]
-col_count = img.shape[1]
-angles_count = len(tifFiles)
-if ARG.verbose:
-    print(
-    "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
-    % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
-       img.max(), img.mean()))
-if ARG.yrange_from is not None:
-	row_count = ARG.yrange_to - ARG.yrange_from
-projectionData = np.zeros(shape=(row_count, angles_count, col_count), dtype=np.float32)
-for i in range(len(tifFiles)):
-	f = tifFiles[i]
-	img = TIFF.open(f)
-	img = img.read_image()
+sec = time.time()
+if os.path.isdir(ARG.inputProjections):
+	pth=os.path.join(ARG.inputProjections, "*.tif")
+	tifFiles = glob.glob(pth)
+	tifFiles.sort()
+	if len(tifFiles) == 0:
+		raise(IOError("The path %s contains %d *.tif projections."%(pth, len(tifFiles))))
+	print("The path %s contains %d *.tif projections."%(pth, len(tifFiles)))
+	tif = TIFF.open(tifFiles[0])
+	img = tif.read_image()
+	row_count = img.shape[0]
+	col_count = img.shape[1]
+	angles_count = len(tifFiles)
+	if ARG.verbose:
+		print("First projection %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."% (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(), img.max(), img.mean()))
 	if ARG.yrange_from is not None:
-		img = img[ARG.yrange_from:ARG.yrange_to, :]
+		row_count = ARG.yrange_to - ARG.yrange_from
+	projectionData = np.zeros(shape=(row_count, angles_count, col_count), dtype=np.float32)
+	for i in range(len(tifFiles)):
+		f = tifFiles[i]
+		img = TIFF.open(f)
+		img = img.read_image()
+		if ARG.yrange_from is not None:
+			img = img[ARG.yrange_from:ARG.yrange_to, :]
+		if ARG.neglog:
+			img = np.log(np.reciprocal(img))
+		projectionData[:,i,:] = img 
+		if ARG.verbose and i % 10 == 0:
+			print("Read file %d of %d" % (i + 1, len(tifFiles)))
+else:
+	projectionData = DEN.getNumpyArray(ARG.inputProjections)
+	DEN.storeNdarrayAsDEN(os.path.join(ARG.output_folder, "%s_orig.den"%(ARG.store_projections)), projectionData, force=ARG.force)
+	projectionData = np.swapaxes(projectionData, 0, 1)
+	angles_count = projectionData.shape[1]
+	if ARG.yrange_from is not None:
+		projectionData = projectionData[ARG.yrange_from:ARG.yrange_to, :]
+	row_count=projectionData.shape[0]
+	col_count=projectionData.shape[2]
 	if ARG.neglog:
-		img = np.log(np.reciprocal(img))
-	projectionData[:,i,:] = img 
-	if ARG.verbose and i % 10 == 0:
-		print("Read file %d of %d" % (i + 1, len(tifFiles)))
+		projectionData = np.log(np.reciprocal(projectionData))
+	if ARG.verbose:
+		print("Projection data in the file %s has dimensions height=%d angles=%d width=%d dtype=%s min=%f, max=%f, mean=%f."%(ARG.inputProjections, projectionData.shape[0], projectionData.shape[1], projectionData.shape[2], projectionData.dtype, projectionData.min(), projectionData.max(), projectionData.mean()))
 if ARG.store_projections is not None:
 	DEN.storeNdarrayAsDEN(os.path.join(ARG.output_folder, ARG.store_projections), np.swapaxes(projectionData, 0, 1), force=ARG.force)
 #Now I created structure with projections let's focus on angles
@@ -335,15 +341,13 @@ max_z = 0.5 * ARG.pixel_sizey * vz_count
 #=======================OUTPUT VOLUME=========
 if not os.path.exists(ARG.output_folder):
 	os.makedirs(ARG.output_folder, exist_ok=True)
-outputName = "%s%s" % (ARG.suffix, getFileNum(tifFiles[0]))
-fullOutputName = os.path.join(ARG.output_folder, outputName)
+outputName = "reconstructVolumeUsingProjectionsAstra_%s" % ARG.suffix
+outputPattern = os.path.join(ARG.output_folder, outputName)
 if ARG.saveden:
-	outputFileName="%s.den" % (fullOutputName)
-if ARG.savetiff:
-	outputFileName="%s.tiff" % (fullOutputName)
-if os.path.exists(outputFileName) and not ARG.force:
-	print("File %s exist, add --force to overwrite." % ARG.outputDEN)
-	os.sys.exit(1)
+	outputFileName="%s.den" % (outputPattern)
+	if os.path.exists(outputFileName) and not ARG.force:
+		print("File %s exist, add --force to overwrite." % ARG.outputDEN)
+		os.sys.exit(1)
 
 vol_geom = astra.create_vol_geom(vy_count, vx_count, vz_count, min_x, max_x,
                                  min_y, max_y, min_z, max_z)
@@ -377,7 +381,6 @@ print("Creating %s algorithm" % cfg["type"])
 #cfg["ReconstructionDataId"] = vol_id;
 cgls_id = astra.algorithm.create(cfg)
 print("Created algorithm")
-sec = time.time()
 if ARG.fbp:
 	astra.algorithm.run(cgls_id, 1)
 else:
@@ -391,9 +394,9 @@ print("Output volume has dimensions %dx%dx%d and type %s" %
 fullOutputName = os.path.join(ARG.output_folder, outputName)
 
 if ARG.saveden:
-	writeDenFile(volume, "%s.den" % (fullOutputName), ARG.force)
+	writeDenFile(volume, "%s.den" % (outputPattern), ARG.force)
 if ARG.savetiff:
-	writeTiffFiles(volume, fullOutputName, ARG.force)
+	writeTiffFiles(volume, outputPattern, ARG.force)
 sec = time.time() - sec
 print("Time %0.2fs"%(sec))
 
