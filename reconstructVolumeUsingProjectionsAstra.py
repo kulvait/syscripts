@@ -61,13 +61,17 @@ parser.add_argument("--platform-id", type=str, default="0:0")
 #                    type=float,
 #                    default=5.0)
 parser.add_argument('--voxel-sizex',
-                    help="Volume dimension x.",
+                    help="Volume dimension x, defaults to pixel-sizex.",
                     type=float,
                     default=0.0125)
 parser.add_argument('--voxel-sizey',
-                    help="Volume dimension y.",
+                    help="Volume dimension y, defaults to pixel-sizex.",
                     type=float,
                     default=0.0125)
+parser.add_argument('--voxel-sizez',
+                    help="Voxel size z, defaults to pixel-sizey.",
+                    type=float,
+                    default=None)
 parser.add_argument('--volume-sizex',
                     help="Volume dimension x.",
                     type=int,
@@ -76,16 +80,16 @@ parser.add_argument('--volume-sizey',
                     help="Volume dimension y.",
                     type=int,
                     default=1024)
-#parser.add_argument('--volume-sizez',
-#                    help="Volume dimension z.",
-#                    type=int,
-#                    default=1024)
+parser.add_argument('--volume-sizez',
+                    help="Voxel size z, defaults to row_count.",
+                    type=float,
+                    default=None)
 parser.add_argument('--pixel-sizex',
                     help="Detector dimension x.",
                     type=float,
                     default=0.00255076)
 parser.add_argument('--pixel-sizey',
-                    help="Volume dimension y.",
+                    help="Detector dimension y.",
                     type=float,
                     default=0.00255076)
 parser.add_argument('--yrange-from', type=int, default=None)
@@ -262,7 +266,6 @@ if os.path.isdir(ARG.inputProjections):
 			print("Read file %d of %d" % (i + 1, len(tifFiles)))
 else:
 	projectionData = DEN.getNumpyArray(ARG.inputProjections)
-	DEN.storeNdarrayAsDEN(os.path.join(ARG.output_folder, "%s_orig.den"%(ARG.store_projections)), projectionData, force=ARG.force)
 	projectionData = np.swapaxes(projectionData, 0, 1)
 	angles_count = projectionData.shape[1]
 	if ARG.yrange_from is not None:
@@ -325,12 +328,24 @@ if ARG.verbose:
 #In 3D
 #astra_create_proj_geom('parallel3d_vec',  det_row_count, det_col_count, vectors);
 #First try something small although number of detectors is 3927
-vx_count = 1024
-vy_count = 1024
-vz_count = row_count
-VOXELX = ARG.voxel_sizex
-VOXELY = ARG.voxel_sizex
-VOXELZ = ARG.pixel_sizey
+vx_count = ARG.volume_sizex
+vy_count = ARG.volume_sizey
+if ARG.volume_sizez is None:
+	vz_count = row_count
+else:
+	vz_count = ARG.volume_sizez
+if ARG.voxel_sizex is None:
+	VOXELX = ARG.pixel_sizex
+else:
+	VOXELX = ARG.voxel_sizex
+if ARG.voxel_sizey is None:
+	VOXELY = ARG.pixel_sizex
+else:
+	VOXELY = ARG.voxel_sizey
+if ARG.voxel_sizez is None:
+	VOXELZ = ARG.pixel_sizey
+else:
+	VOXELZ=ARG.voxel_sizez
 min_x = -0.5*vx_count*VOXELX
 max_x = 0.5*vx_count*VOXELX
 min_y = -0.5*vy_count*VOXELY

@@ -88,6 +88,7 @@ def writeSlabs(ARG, tifFiles, outputDen, force=None):
 	col_count = img.shape[1]
 	angles_count = len(tifFiles)
 	if ARG.verbose:
+		print("There is %d files of assumed dimensions HEIGHT=%d WIDTH=%d"%(angles_count, row_count, col_count))
 		print(
 	    "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
 	    % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
