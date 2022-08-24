@@ -46,6 +46,9 @@ parser.add_argument("--suffix", default="")
 parser.add_argument("--output-folder", default=".")
 parser.add_argument("--store-projections", default=None)
 parser.add_argument("--angles-mat", default=None)
+parser.add_argument("--theta-zero", type=float, default=0, help="Initial angle theta from Radon transform in degrees, defaults to zero. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html")
+parser.add_argument("--theta-angular-range", type=float, default=360, help="This is angular range in degrees, along which possitions are distributed.")
+parser.add_argument("--material-ct-convention", action="store_true", default=False, help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
 parser.add_argument("--itterations", type=int, default=100)
 parser.add_argument("--platform-id", type=str, default="0:0")
 #parser.add_argument('--box-sizex',
@@ -115,6 +118,9 @@ def parsePlatformString(platformId):
 
 gpuid = parsePlatformString(ARG.platform_id)
 astra.astra.set_gpu_index(gpuid)
+
+def degToRad(angle):
+	return np.pi*angle/180
 
 def getFileNum(filePath):
 	numberSearch = re.search(r"(\d*).tif", filePath)
@@ -194,31 +200,36 @@ def createProjectorConfig(projectorName, projectionsID, volumeID, usegpu=True):
 	return cfg
 
 
-def generateAstraParallel3d_vec(angles, det_width, det_height, offsetvx=None, offsetvy=None):
+def generateAstraParallel3d_vec(angles, det_width, det_height, offsetvx=None, offsetvy=None, material_ct_convention = None):
 	if offsetvx is None:
 		offsetvx = 0.
 	if offsetvy is None:
 		offsetvy = 0.
+	if material_ct_convention is None:
+		material_ct_convention = False
 	vectors = np.zeros((len(angles), 12))
 	for i in range(angles_count):
-		angle = angles[i]
+		theta = thetas[i]
 		#From https://www.astra-toolbox.com/docs/geom3d.html
 		#ray direction
-		vectors[i, 0] = np.cos(angle)
-		vectors[i, 1] = np.sin(angle)
+		vectors[i, 0] = np.sin(theta)
+		vectors[i, 1] = -np.cos(theta)
 		vectors[i, 2] = 0.
 		#center of detector
-		vectors[i, 3] = 0. + np.sin(angle)*offsetvx
-		vectors[i, 4] = 0. - np.cos(angle)*offsetvx
+		vectors[i, 3] = 0. + np.cos(theta)*offsetvx
+		vectors[i, 4] = 0. + np.sin(theta)*offsetvx
 		vectors[i, 5] = offsetvy
 		# vector from detector pixel (0,0) to (0,1)
-		vectors[i, 6] = np.sin(angle) * det_width
-		vectors[i, 7] = -np.cos(angle) * det_width
+		vectors[i, 6] = np.cos(theta) * det_width
+		vectors[i, 7] = np.sin(theta) * det_width
 		vectors[i, 8] = 0
 		#vector from detector pixel (0,0) to (1,0)
 		vectors[i, 9] = 0
 		vectors[i, 10] = 0
-		vectors[i, 11] = -det_height
+		if material_ct_convention:
+			vectors[i, 11] = det_height
+		else:
+			vectors[i, 11] = -det_height
 	return (vectors)
 
 def transformToExtinction(invertedProjectionIntensities):
@@ -283,16 +294,16 @@ if ARG.angles_mat is not None:
 	matlab_dic = scipy.io.loadmat(ARG.angles_mat)
 	angles = matlab_dic["angles"]
 else:
-	angles = np.linspace(
-	    0, 2 * np.pi, angles_count,
-	    endpoint=False)  #Equally spaced values which has sin.shape[0] voids
+	theta_zero = degToRad(ARG.theta_zero)
+	theta_angular_range = degToRad(ARG.theta_angular_range)
+	angles = np.linspace(theta_zero, theta_zero + theta_angular_range, num=angles_count, endpoint=False)
 
 #Geometry setup
 if len(angles) != angles_count:
 	print("INCOMPATIBLE ANGLES DIMENSIONS!")
 	os.sys.exit(1)
 vectors = generateAstraParallel3d_vec(angles, ARG.pixel_sizex,
-                                                ARG.pixel_sizey, ARG.detector_center_offsetvx, ARG.detector_center_offsetvy)
+                                                ARG.pixel_sizey, ARG.detector_center_offsetvx, ARG.detector_center_offsetvy, ARG.material_ct_convention)
 proj_geom = astra.create_proj_geom('parallel3d_vec', row_count, col_count,
                                    vectors)
 #logFile = getReconLog(tifFiles[0])

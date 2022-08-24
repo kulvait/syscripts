@@ -4,16 +4,18 @@ Created on Fri Feb 11 11:05:28 2022
 
 @author: Vojtech Kulvait
 """
-
-import numpy as np
+import pdb
+from termcolor import colored
 import odl
+import numpy as np
 #import mpi#Volume decomposition
 
 import os
+import sys
 import argparse
-from libtiff import TIFF
 from denpy import DEN
 from PIL import Image
+from PIL.TiffTags import TAGS
 import re
 import json
 import glob
@@ -30,11 +32,12 @@ inputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/ivw0032_Referenz_blau_4_00
 outputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/kulvait_scratch/ivw0032_Referenz_blau_4_000/odl"
 
 parser = argparse.ArgumentParser()
-parser.add_argument("inputFolder")
+parser.add_argument("inputProjections")
 parser.add_argument("--cgls", action="store_true")
 parser.add_argument("--sirt", action="store_true")
 parser.add_argument("--sart", action="store_true")
 parser.add_argument("--btv", action="store_true", help="Bregman-TV according to https://github.com/odlgroup/odl/blob/master/examples/solvers/bregman_tv_tomography.py")
+parser.add_argument("--pdhg", action="store_true", help="Total variation tomography using PDHG according to https://github.com/odlgroup/odl/blob/master/examples/solvers/pdhg_tomography.py")
 parser.add_argument("--fbp", action="store_true")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--gpu", action="store_true")
@@ -46,6 +49,9 @@ parser.add_argument("--suffix", default="")
 parser.add_argument("--output-folder", default=".")
 parser.add_argument("--store-projections", default=None)
 parser.add_argument("--angles-mat", default=None)
+parser.add_argument("--theta-zero", type=float, default=0, help="Initial angle theta from Radon transform in degrees, defaults to zero. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html")
+parser.add_argument("--theta-angular-range", type=float, default=360, help="This is angular range in degrees, along which possitions are distributed.")
+parser.add_argument("--material-ct-convention", action="store_true", default=False, help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
 parser.add_argument("--offset-mat", default=None)
 parser.add_argument("--offset-x", default=0.0, type=float)
 parser.add_argument("--itterations", type=int, default=100)
@@ -94,6 +100,10 @@ parser.add_argument('--pixel-sizey',
                     help="Volume dimension y.",
                     type=float,
                     default=0.00255076)
+parser.add_argument('--regularization-parameter',
+                    help="Regularization parameter for given method if it supports it",
+                    type=float,
+                    default=0.0)
 parser.add_argument('--yrange-from', type=int, default=None)
 parser.add_argument('--yrange-to', type=int, default=None)
 parser.add_argument("--detector-center-offsetvx", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
@@ -124,6 +134,9 @@ def parsePlatformString(platformId):
 	return int(tk[1])
 
 gpuid = parsePlatformString(ARG.platform_id)
+
+def degToRad(angle):
+	return np.pi*angle/180
 
 def getFileNum(filePath):
 	numberSearch = re.search(r"(\d*).tif", filePath)
@@ -187,7 +200,8 @@ def writeDenFile(volume, denFile, force=False):
     dimz = volume.shape[2]
     DEN.writeEmptyDEN(denFile, [dimx, dimy, dimz], force=force)
     for k in range(dimz):
-        DEN.writeFrame(denFile, k, np.flip(np.transpose(volume[:, :, k]), 0), force=force)
+        #DEN.writeFrame(denFile, k, np.flip(np.transpose(volume[:, :, k]), 0), force=force)
+        DEN.writeFrame(denFile, k, np.transpose(volume[:, :, k]), force=force)
 
 def writeDenProjections(com, denFile, force=False):
     if os.path.exists(denFile):
@@ -257,22 +271,38 @@ def transformToExtinction(invertedProjectionIntensities):
 
 #print("Log file is %s"%(logFile))
 #print(dct)
-#=================INPUT PROJECTION DATA===============
-pth=os.path.join(ARG.inputFolder, "*.tif")
-print("Openning path %s"%(pth))
-tifFiles = glob.glob(pth)
-tifFiles.sort()
-tif = TIFF.open(tifFiles[0])
-img = tif.read_image()
-if ARG.yrange_from is not None:
-	row_count = ARG.yrange_to - ARG.yrange_from
-else:
+#=================INPUT DIMENSIONS===============
+sec = time.time()
+if os.path.isdir(ARG.inputProjections):
+	pth=os.path.join(ARG.inputProjections, "*.tif")
+	tifFiles = glob.glob(pth)
+	tifFiles.sort()
+	if len(tifFiles) == 0:
+		raise(IOError("The path %s contains %d *.tif projections."%(pth, len(tifFiles))))
+	print("The path %s contains %d *.tif projections."%(pth, len(tifFiles)))
+	tif = Image.open(tifFiles[0])
+	img = np.array(tif)
 	row_count = img.shape[0]
-col_count = img.shape[1]
-angles_count = len(tifFiles)
+	col_count = img.shape[1]
+	angles_count = len(tifFiles)
+	if ARG.verbose:
+		print("First projection %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."% (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(), img.max(), img.mean()))
+	if ARG.yrange_from is not None:
+		row_count = ARG.yrange_to - ARG.yrange_from
+else:
+	projectionDataInfo = DEN.readHeader(ARG.inputProjections)
+	if projectionDataInfo["dimcount"] != 3:
+		raise(IOError("Wrong dimcount %d in input projection file %s."%(projectionDataInfo["dimcount"], ARG.inputProjections)))
+	row_count = projectionDataInfo["dimspec"][1]
+	col_count = projectionDataInfo["dimspec"][0]
+	angles_count = projectionDataInfo["dimspec"][2]
+	if ARG.yrange_from is not None:
+		row_count = ARG.yrange_to - ARG.yrange_from
+print(colored("Inputs are read", "green"), flush=True)
 
 #First I need to specify vectors of discretization of detector and angles
 #angles
+#Angles are omega from https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html but read are thetas
 if ARG.angles_mat is not None:
 	matlab_dic = scipy.io.loadmat(ARG.angles_mat)
 	angles = matlab_dic["angles"]
@@ -285,15 +315,18 @@ else:
 	    0, 2 * np.pi, angles_count,
 	    endpoint=False)  #Equally spaced values which has sin.shape[0] voids
 	angles = np.linspace(
-	    0, np.pi, angles_count,
+	    0-np.pi/2, np.pi-np.pi/2, angles_count,
 	    endpoint=False)  #Equally spaced values which has sin.shape[0] voids
+	theta_zero = degToRad(ARG.theta_zero)
+	theta_angular_range = degToRad(ARG.theta_angular_range)
+	angles = np.linspace(theta_zero, theta_zero + theta_angular_range, num=angles_count, endpoint=False)
 #Detector dimensions from projection data
 min_px = -0.5 * ARG.pixel_sizex * col_count
 max_px = 0.5 * ARG.pixel_sizex * col_count 
 min_py = -0.5 * ARG.pixel_sizey * row_count
 max_py = 0.5 * ARG.pixel_sizey * row_count
-detector_centers_x = np.linspace(min_px + 0.5* ARG.pixel_sizex, max_px- 0.5* ARG.pixel_sizex, col_count)
-detector_centers_y = np.linspace(min_py + 0.5* ARG.pixel_sizey, max_py -0.5 * ARG.pixel_sizey, row_count)
+detector_centers_x = np.linspace(min_px + 0.5* ARG.pixel_sizex, max_px - 0.5 * ARG.pixel_sizex, col_count)
+detector_centers_y = np.linspace(min_py + 0.5* ARG.pixel_sizey, max_py - 0.5 * ARG.pixel_sizey, row_count)
 print("Pixel sizes = [%f, %f]"%(ARG.pixel_sizex, ARG.pixel_sizey))
 
 # Reconstruction space: discretized functions on the cube
@@ -330,7 +363,7 @@ reco_space = odl.uniform_discr(min_pt=[min_x, min_y, min_z], max_pt=[max_x, max_
 #=======================OUTPUT VOLUME=========
 if not os.path.exists(ARG.output_folder):
 	os.makedirs(ARG.output_folder, exist_ok=True)
-outputName = "%s%s" % (ARG.suffix, getFileNum(tifFiles[0]))
+outputName = "reconstructVolumeUsingProjectionsODL_%s" % (ARG.suffix)
 fullOutputName = os.path.join(ARG.output_folder, outputName)
 if ARG.saveden:
 	outputFileName="%s.den" % (fullOutputName)
@@ -353,7 +386,19 @@ else:
 	offset[0] = ARG.offset_x*ARG.pixel_sizex
 	#offset[0] = -ARG.offset_x
 print("offset: %s"%(offset))
-geometry = odl.tomo.Parallel3dAxisGeometry(angle_partition, detector_partition, axis=[0 , 0, 1], det_pos_init=[offset[0],offset[1],offset[2]])
+#If initial ray direction is along x axis detector is aligned with y axis
+#VK geometry
+initAngle = angles[0]
+#For theta
+if ARG.material_ct_convention:
+	det_axis_y = (0.0, 0.0, 1.0)
+else:
+	det_axis_y = (0.0, 0.0, -1.0)
+geometry = odl.tomo.Parallel3dAxisGeometry(angle_partition, detector_partition, axis=[0 , 0, 1], det_axes_init=[(np.cos(initAngle), np.sin(initAngle) , 0), det_axis_y], det_pos_init=[offset[0]*np.cos(initAngle),offset[0]*np.sin(initAngle),offset[2]])
+#For omega
+#geometry = odl.tomo.Parallel3dAxisGeometry(angle_partition, detector_partition, axis=[0 , 0, 1], det_axes_init=[(-np.sin(initAngle), np.cos(initAngle) , 0), (0, 0, -1)], det_pos_init=[offset[0]*-np.sin(initAngle),offset[0]*np.cos(initAngle),offset[2]])
+#Default ODL geometry
+#geometry = odl.tomo.Parallel3dAxisGeometry(angle_partition, detector_partition, axis=[0 , 0, 1], det_axes_init=[(1, 0, 0), (0, 0, 1)], det_pos_init=[offset[0],offset[1],offset[2]])
 
 ray_trafo = odl.tomo.RayTransform(reco_space, geometry, impl='astra_cuda')
 
@@ -363,18 +408,35 @@ tspace = odl.space.space_utils.rn(partition.shape, dtype='float32')
 ds = odl.discr.discr_space.DiscretizedSpace(partition, tspace)
 projectionData_element = ds.element()
 with odl.util.utility.writable_array(projectionData_element) as projectionData:
-	for i in range(len(tifFiles)):
-		f = tifFiles[i]
-		img = TIFF.open(f)
-		img = img.read_image()
-		if ARG.yrange_from is not None:
-			img = img[ARG.yrange_from:ARG.yrange_to, :]
-		if ARG.neglog:
-			projectionData[i] = np.log(np.reciprocal(np.transpose(img)))
-		else:
-			projectionData[i] = np.transpose(img)
-		if ARG.verbose and i % 10 == 0:
-			print("Read file %d of %d" % (i + 1, len(tifFiles)))
+	if os.path.isdir(ARG.inputProjections):
+		pth=os.path.join(ARG.inputProjections, "*.tif")
+		tifFiles = glob.glob(pth)
+		tifFiles.sort()
+		for i in range(angles_count):
+			f = tifFiles[i]
+			im = Image.open(f)
+			img = np.array(im)
+			if ARG.yrange_from is not None:
+				img = img[ARG.yrange_from:ARG.yrange_to, :]
+				#img = img[:,ARG.yrange_from:ARG.yrange_to]
+			if ARG.neglog:
+				projectionData[i] = np.log(np.reciprocal(np.transpose(img)))
+				#projectionData[i] = np.log(np.reciprocal(img))
+			else:
+				projectionData[i] = np.transpose(img)
+			if ARG.verbose and i % 10 == 0:
+				print("Read file %d of %d" % (i + 1, len(tifFiles)))
+	else:
+		for i in range(angles_count):
+			img = DEN.getFrame(ARG.inputProjections, i)
+			if ARG.yrange_from is not None:
+				img = img[ARG.yrange_from:ARG.yrange_to, :]
+			if ARG.neglog:
+				projectionData[i] = np.log(np.reciprocal(np.transpose(img)))
+			else:
+				projectionData[i] = np.transpose(img)
+	if ARG.verbose:
+		print("Projection data in %s has dimensions angles=%d width=%d height=%d dtype=%s min=%f, max=%f, mean=%f."%(ARG.inputProjections, projectionData.shape[0], projectionData.shape[1], projectionData.shape[2], projectionData.dtype, projectionData.min(), projectionData.max(), projectionData.mean()))
 	if ARG.store_projections is not None:
 		denFile = os.path.join(ARG.output_folder, ARG.store_projections)
 		writeDenProjections(projectionData, denFile, force=ARG.force)
@@ -391,15 +453,20 @@ if ARG.verbose:
 	    % (ARG.pixel_sizex, ARG.pixel_sizey, len(angles)))
 
 
-sec = time.time()
 if ARG.cgls:
 	print("Not yet implemented")
 elif ARG.sirt:
 	print("Not yet implemented")
 elif ARG.fbp:
-	print("Start FBP")
 	fbp = odl.tomo.fbp_op(ray_trafo, filter_type='Hann', frequency_scaling=0.8)
-	rec = fbp(projectionData_element)
+	print(colored("Start FBP %s"%(fbp.operatorString()), "green"), flush=True)
+	x = reco_space.zero()
+	#from pudb.remote import set_trace; 
+	#set_trace(term_size=(201,52))#This is what is in $LINES and $COLUMNS see https://unix.stackexchange.com/questions/184009/how-do-i-find-number-of-vertical-lines-available-in-the-terminal 
+	#import pudb; pu.db
+	#pdb.run("fbp(projectionData_element)")
+	rec = fbp(projectionData_element, out=x)
+	print(colored("End FBP", "green"), flush=True)
 elif ARG.btv:
 	print("Start Bregman-TV")
 	# Components for variational problem: l2-squared data matching and isotropic
@@ -459,9 +526,40 @@ elif ARG.btv:
 		# Display the result after this iteration
 		#x.show(title='Outer Bregman Iteration {}'.format(breg_iter),force_show=True)
 	rec = x
+elif ARG.pdhg:
+	gradient = odl.Gradient(reco_space)
+	op = odl.BroadcastOperator(ray_trafo, gradient)
+	f = odl.solvers.ZeroFunctional(op.domain)
+	l2_norm = odl.solvers.L2NormSquared(ray_trafo.range).translated(projectionData_element)
+	if ARG.regularization_parameter == 0:
+		reg = 0.015
+	else:
+		reg = ARG.regularization_parameter
+	print("Start PDHG with REG=%e"%(reg))
+	l1_norm = reg * odl.solvers.L1Norm(gradient.range)
+	g = odl.solvers.SeparableSum(l2_norm, l1_norm)
+	op_norm = 1.1 * odl.power_method_opnorm(op)
+	#Config
+#	print("CALLING POWER METHOD", flush=True)
+#	op_norm = 1.01 * odl.power_method_opnorm(op)
+#	print("END POWER METHOD", flush=True)
+	niter = 200
+	tau = 1.0 / op_norm
+	sigma = 1.0 / op_norm
+	print("Tau=%e sigma=%e"%(tau, sigma), flush=True)
+#	print(tau)
+	
+	
+	#callback = (odl.solvers.CallbackPrintIteration(step=10) &
+    #        odl.solvers.CallbackShow(step=10))
+	x = op.domain.zero()
+	#odl.solvers.pdhg(x, f, g, op, niter=niter, tau=tau, sigma=sigma, callback=callback)
+	odl.solvers.pdhg(x, f, g, op, niter=niter, tau=tau, sigma=sigma)
+	#odl.solvers.pdhg(x, f, g, op, niter=1)
+	rec = x
 
 
-print("End reconstruction, get and write volume data.")
+print("End reconstruction, get and write volume data.", flush=True)
 with odl.util.utility.writable_array(rec) as volume:
 	fullOutputName = os.path.join(ARG.output_folder, outputName)
 	print("Output volume has dimensions %dx%dx%d and type %s" % (volume.shape[0], volume.shape[1], volume.shape[2], volume.dtype))
@@ -470,7 +568,7 @@ with odl.util.utility.writable_array(rec) as volume:
 	if ARG.savetiff:
 		writeTiffFiles(volume, fullOutputName, ARG.force)
 sec = time.time() - sec
-print("Time %0.2fs"%(sec))
+print("Time %0.2fs\n"%(sec))
 
-with open("%s.log" % (fullOutputName), 'wt') as f:
+with open(os.path.join(ARG.output_folder, "ARG_%s.log"%(outputName)), 'wt') as f:
 	json.dump(vars(ARG), f, indent=4)

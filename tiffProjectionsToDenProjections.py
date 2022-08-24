@@ -8,6 +8,8 @@ Created on Mon Jan 31 15:15:23 2022
 import h5py
 import pandas as pd
 from libtiff import TIFF
+from PIL import Image
+from PIL.TiffTags import TAGS
 #pd.set_option('display.max_columns', 100) to display untruncated columns
 import sys
 import os
@@ -59,8 +61,10 @@ def writeDenFile(df, inputDir, denFile, force=False):
 	if isinstance(fileStr, bytes):
 		fileStr = fileStr.decode("utf-8")
 	file = os.path.join(inputDir, fileStr)
-	img = TIFF.open(file)
-	img = img.read_image()
+	im = Image.open(file)
+	img = np.array(im)
+	#img = TIFF.open(file)
+	#img = img.read_image()
 	dimy = img.shape[0]
 	dimx = img.shape[1]
 	dimz = len(df)
@@ -71,10 +75,13 @@ def writeDenFile(df, inputDir, denFile, force=False):
 		    i]  #In some versions this is string but in some bytes
 		if isinstance(fileStr, bytes):
 			fileStr = fileStr.decode("utf-8")
-		img = TIFF.open(os.path.join(inputDir, fileStr))
-		img = img.read_image()
-		print("Writing %d-th file %s of shape %d,%d into %s" %
-		      (i, fileStr, img.shape[0], img.shape[1], denFile))
+		f = os.path.join(inputDir, fileStr)
+		#img = TIFF.open(f)
+		#img = img.read_image()
+		im = Image.open(f)
+		img = np.array(im)
+		print("Writing %d-th file %s with orientation %d of shape %d,%d into %s" %
+		      (i, fileStr, ori, img.shape[0], img.shape[1], denFile))
 		DEN.writeFrame(denFile, i, img, True)
 
 def writeSlabs(ARG, tifFiles, outputDen, force=None):
@@ -82,8 +89,14 @@ def writeSlabs(ARG, tifFiles, outputDen, force=None):
 		force=False
 	if ARG.verbose:
 		print("Preparing file %s"%outputDen)
-	tif = TIFF.open(tifFiles[0])
-	img = tif.read_image()
+	#tif = TIFF.open(tifFiles[0])
+	#img = tif.read_image()
+	im = Image.open(tifFiles[0])
+	img = np.array(im)
+	dct = {TAGS[key] : im.tag[key] for key in im.tag}
+	print(dct)
+	o = im.tag["Orientation"]
+	print("Orientation %d"%(o))
 	row_count = img.shape[0]
 	col_count = img.shape[1]
 	angles_count = len(tifFiles)
@@ -96,8 +109,10 @@ def writeSlabs(ARG, tifFiles, outputDen, force=None):
 	images = np.zeros(shape=(angles_count, row_count, col_count), dtype=np.float32)
 	for i in range(len(tifFiles)):
 		f = tifFiles[i]
-		img = TIFF.open(f)
-		img = img.read_image()
+		#img = TIFF.open(f)
+		#img = img.read_image()
+		im = Image.open(f)
+		img = np.array(im)
 		images[i] = img
 		if ARG.verbose and i % 10 == 0:
 			print("Read file %d of %d" % (i + 1, len(tifFiles)))
