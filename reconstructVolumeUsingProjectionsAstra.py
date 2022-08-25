@@ -85,7 +85,7 @@ parser.add_argument('--volume-sizey',
                     default=1024)
 parser.add_argument('--volume-sizez',
                     help="Voxel size z, defaults to row_count.",
-                    type=float,
+                    type=int,
                     default=None)
 parser.add_argument('--pixel-sizex',
                     help="Detector dimension x.",
@@ -209,7 +209,7 @@ def generateAstraParallel3d_vec(angles, det_width, det_height, offsetvx=None, of
 		material_ct_convention = False
 	vectors = np.zeros((len(angles), 12))
 	for i in range(angles_count):
-		theta = thetas[i]
+		theta = angles[i]
 		#From https://www.astra-toolbox.com/docs/geom3d.html
 		#ray direction
 		vectors[i, 0] = np.sin(theta)
@@ -374,7 +374,6 @@ if ARG.saveden:
 	if os.path.exists(outputFileName) and not ARG.force:
 		print("File %s exist, add --force to overwrite." % ARG.outputDEN)
 		os.sys.exit(1)
-
 vol_geom = astra.create_vol_geom(vy_count, vx_count, vz_count, min_x, max_x,
                                  min_y, max_y, min_z, max_z)
 #To understand this order is useful to go https://www.astra-toolbox.com/apiref/creators.html
