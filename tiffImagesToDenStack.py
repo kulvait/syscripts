@@ -21,6 +21,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('inputTifFiles', nargs='+', type=str)
 parser.add_argument("outputDen")
 parser.add_argument("--force", action="store_true")
+parser.add_argument("--float32", help="Output float32 array regardless dtype of input data.",  action="store_true")
 parser.add_argument("--verbose", action="store_true")
 
 #ARG = parser.parse_args([])
@@ -39,20 +40,24 @@ def writeDenFile(inputTifFiles, denFile, force=False):
 	dimy = img.shape[0]
 	dimx = img.shape[1]
 	dtype = img.dtype
-	frame = np.zeros([len(inputTifFiles), dimy, dimx], dtype=dtype)
+	if not ARG.float32:
+		frame = np.zeros([len(inputTifFiles), dimy, dimx], dtype=dtype)
+	if ARG.float32:
+		DEN.writeEmptyDEN(denFile, [dimx, dimy, len(inputTifFiles)], force=True)
 	for i in range(len(inputTifFiles)):
-		im = Image.open(inputTifFiles[i])
+		f = inputTifFiles[i]
+		im = Image.open(f)
 		img = np.array(im)
-		if img.shape[0] != dimx:
-			raise IOError("File %s shape %d does not agree with expected %d"%(file, img.shape[0], dimx))
-		if img.shape[1] != dimy:
-			raise IOError("File %s shape %d does not agree with expected %d"%(file, img.shape[1], dimy))
+		if img.shape[0] != dimy or img.shape[1] != dimx:
+			raise IOError("File %s shape (%d, %d) does not agree with expected (%d, %d) of %s"%(f, img.shape[0], img.shape[0], dimx, dimy, inputTifFiles[0]))
 		if img.dtype != dtype:
-			raise IOError("File %s dtype %s does not agree with expected %s"%(file, img.dtype, dtype))
-		if img.dtype != dtype:
-			raise IOError("File %s dtype %s does not agree with expected %s"%(file, img.dtype, dtype))
-		frame[i] = img
-	DEN.storeNdarrayAsDEN(denFile, frame)
+			raise IOError("File %s dtype %s does not agree with expected %s"%(f, img.dtype, dtype))
+		if ARG.float32:
+			DEN.writeFrame(denFile, i, img.astype(np.float32), True)
+		else:
+			frame[i] = img
+	if not ARG.float32:
+		DEN.storeNdarrayAsDEN(denFile, frame)
 
 if ARG.verbose:
 	print("Start of the script")
