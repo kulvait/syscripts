@@ -29,13 +29,14 @@ parser.add_argument("--h5file", type=str, help="H5 file to read data for exposur
 parser.add_argument("--current-correction", action="store_true")
 parser.add_argument("--target-current-value", type=float, help="Current to correct to [default 100mA]", default=100)
 parser.add_argument("--dark-field-correction", type=str, help="Data of the dark field to subtract before current correction", default=None)
+parser.add_argument("--dark-frame-inf", type=str, help="Data of the lowest admissible value after dark field correction, data less or equal to max(dark-frame-inf, 1.67 MAD_frame) will be set to  max(dark-frame-inf, 1.67 MAD_frame).", default=None)
 
 #ARG = parser.parse_args([])
 ARG = parser.parse_args()
 
 
 #To write dataframe to den
-def writeDenFile(inputTifFiles, denFile, force=False, darkFrame = None, targetCurrentValue = None, scanData = None):
+def writeDenFile(inputTifFiles, denFile, force=False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None):
 	correctionValuePrinted = False
 	if os.path.exists(denFile):
 		if force:
@@ -68,14 +69,17 @@ def writeDenFile(inputTifFiles, denFile, force=False, darkFrame = None, targetCu
 			factor = targetCurrentValue/frameCurrent
 			img = img * factor
 		if ARG.float32:
-			#Correct so that image has value of one hunderth of the median dark field signal
+			#Correct by 1.67 MAD
 			correctValue = 0.0
 			if darkFrame is not None:
-				correctValue = np.median(darkFrame)*0.01
-			if not correctionValuePrinted:
-				print("Correction value of the minimum signal is %f"%(correctValue))
-				correctionValuePrinted=True
+				MAD_frame = np.median(np.absolute(darkFrame - np.median(darkFrame)))
+				correctValue = 1.67 * MAD_frame
+				if not correctionValuePrinted:
+					print("Correction value of the minimum signal is %f"%(correctValue))
+					correctionValuePrinted=True
 			img[img < correctValue] = correctValue
+			if darkFrameInf is not None:
+				img = np.maximum(darkFrameInf, img)
 			DEN.writeFrame(denFile, i, img.astype(np.float32), True)
 		else:
 			img[img < 0] = 0
@@ -88,14 +92,18 @@ if ARG.verbose:
 darkFrame = None
 scanData = None
 targetCurrentValue = None
+darkFrameInf = None
 if ARG.h5file is not None:
 	scanData = PETRA.scanDataset(ARG.h5file)
 if ARG.dark_field_correction is not None:
 	darkFrame = DEN.getFrame(ARG.dark_field_correction, 0)
+if ARG.dark_frame_inf is not None:
+	print("Using %s as inf value for correction"%(os.path.basename(ARG.dark_frame_inf)))
+	darkFrameInf = DEN.getFrame(ARG.dark_frame_inf, 0)
 if ARG.current_correction:
 	targetCurrentValue = ARG.target_current_value
 	if ARG.h5file is None:
 		print("You have to provice h5file to be albe to perform current correction")
 		sys.exit(-1)
 	print("Will perform current correction to targetValue %f"%(targetCurrentValue))
-writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData)
+writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf)
