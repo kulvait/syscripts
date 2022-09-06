@@ -7,9 +7,16 @@ Created on Mon Jan 31 15:15:23 2022
 """
 import argparse
 from denpy import DEN
+import os
+os.environ["OMP_NUM_THREADS"] = "16"
+os.environ["OPENBLAS_NUM_THREADS"] = "16" # export OPENBLAS_NUM_THREADS=4 
+os.environ["MKL_NUM_THREADS"] = "16" # export MKL_NUM_THREADS=6
+os.environ["VECLIB_MAXIMUM_THREADS"] = "16" # export VECLIB_MAXIMUM_THREADS=4
+os.environ["NUMEXPR_NUM_THREADS"] = "16" # export NUMEXPR_NUM_THREADS=6
 import numpy as np
 import sys
-import os
+import time
+import statistics
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputDen")
@@ -19,7 +26,7 @@ parser.add_argument("--bin-y", type=int, default=1, help="Y dimension of binning
 parser.add_argument("--force", action="store_true")
 group = parser.add_mutually_exclusive_group(required=True)
 group.add_argument('--average', action='store_true')
-group.add_argument('--median',	action='store_true')
+group.add_argument('--median', action='store_true')
 
 
 ARG = parser.parse_args()
@@ -34,6 +41,8 @@ else:
 	zdim = header["dimspec"][2]
 xdim = header["dimspec"][0]
 ydim = header["dimspec"][1]
+bin_x = ARG.bin_x
+bin_y = ARG.bin_y
 xdim_red = xdim - xdim % ARG.bin_x
 ydim_red = ydim - ydim % ARG.bin_y
 xdim_out = xdim_red // ARG.bin_x
@@ -49,26 +58,35 @@ if ydim % ARG.bin_y != 0:
 DEN.writeEmptyDEN(ARG.outputDen, [xdim_out, ydim_out, zdim], header["type"], force=ARG.force)
 print("Created file [dimx, dimy, dimz] = [%d, %d, %d]"%(xdim_out, ydim_out, zdim))
 
-def reduce(ARG, box):
-	if ARG.median:
-		return np.median(box)
-	if ARG.average:
-		return np.mean(box)
+boxsize = bin_x*bin_y
+arraySize_red = ydim_red*xdim_red
+arraySize_bin = arraySize_red // boxsize
+ydim_bin = ydim_red//bin_y
+xdim_bin = xdim_red//bin_x
+newshape = (ydim_bin, xdim_bin, boxsize)
+g = np.zeros((ydim_bin, xdim_bin), dtype=np.float32)
+#binshape = (ydim_bin, xdim_bin)
+#newshape = (arraySize_bin, boxsize)
 
-def binning(ARG, f, bin_x, bin_y):
-	m,n = np.shape(f)
-	bin_m = m//bin_y
-	bin_n = n//bin_x
-	strides_spec = f.itemsize*np.array([(m // bin_m) * n, (n // bin_n), n, 1], dtype=np.int32)
-	print("Spec [%d %d %d %d] dtype=%s"%(m/bin_m*n, n/bin_n, n, 1, strides_spec.dtype))
-	strided_reshape = np.lib.stride_tricks.as_strided(f,shape=(bin_m,bin_n,m//bin_m,n//bin_n),strides = strides_spec)
-	return np.array([reduce(ARG, col) for row in strided_reshape for col in row]).reshape(bin_m,bin_n)
+#numba
+#newshape = (arraySize_bin, boxsize)
+#g = np.zeros((arraySize_bin), dtype=np.float32)
 
+def medianx(f, g):
+	for ind in range(g.shape[0]):
+		g[ind] = statistics.median(f[ind])
 
 for k in range(zdim):
+	print("Start for %d"%k)
+	start = time.time()
 	f = DEN.getFrame(ARG.inputDen, k, row_to = ydim_red, col_to = xdim_red)
-	#According to https://stackoverflow.com/questions/40097213/how-do-i-median-bin-a-2d-image-in-python
-	g = binning(ARG, f, ARG.bin_x, ARG.bin_y)
-	print(g.shape)
+	f.shape = (ydim_bin, bin_y, xdim_bin, bin_x)
+	f_reshaped = f.swapaxes(1, 2)
+	f_reshaped = f_reshaped.reshape(newshape)
+	if ARG.median:
+		np.median(f_reshaped, axis=-1, overwrite_input=True, out=g)
+	if ARG.average:
+		g = np.mean(f_reshaped, axis=-1)
 	DEN.writeFrame(ARG.outputDen, k, g, force=ARG.force)
+	print("Elapsed %0.2fs"%(time.time()-start))
 

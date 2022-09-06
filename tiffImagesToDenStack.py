@@ -18,6 +18,7 @@ from denpy import DEN
 from denpy import PETRA
 import glob
 import numpy as np
+from termcolor import colored
 
 parser = argparse.ArgumentParser()
 parser.add_argument('inputTifFiles', nargs='+', type=str)
@@ -30,13 +31,14 @@ parser.add_argument("--current-correction", action="store_true")
 parser.add_argument("--target-current-value", type=float, help="Current to correct to [default 100mA]", default=100)
 parser.add_argument("--dark-field-correction", type=str, help="Data of the dark field to subtract before current correction", default=None)
 parser.add_argument("--dark-frame-inf", type=str, help="Data of the lowest admissible value after dark field correction, data less or equal to max(dark-frame-inf, 1.67 MAD_frame) will be set to  max(dark-frame-inf, 1.67 MAD_frame).", default=None)
+parser.add_argument("--export-info", action="store_true")
 
 #ARG = parser.parse_args([])
 ARG = parser.parse_args()
 
 
 #To write dataframe to den
-def writeDenFile(inputTifFiles, denFile, force=False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None):
+def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None):
 	correctionValuePrinted = False
 	if os.path.exists(denFile):
 		if force:
@@ -52,19 +54,27 @@ def writeDenFile(inputTifFiles, denFile, force=False, darkFrame = None, darkFram
 		frame = np.zeros([len(inputTifFiles), dimy, dimx], dtype=dtype)
 	if ARG.float32:
 		DEN.writeEmptyDEN(denFile, [dimx, dimy, len(inputTifFiles)], force=True)
+	if exportInfo:
+		info = np.zeros([2,len(inputTifFiles)], dtype=np.float64)
+		# info[0,:] time in the format usual in synchrotron description in ms
+		# info[1,:] angle in degrees
+	#for i in range(len(inputTifFiles)):
 	for i in range(len(inputTifFiles)):
 		f = inputTifFiles[i]
+		fileName = os.path.basename(f)
 		im = Image.open(f)
 		img = np.array(im)
 		if img.shape[0] != dimy or img.shape[1] != dimx:
 			raise IOError("File %s shape (%d, %d) does not agree with expected (%d, %d) of %s"%(os.path.basename(f), img.shape[0], img.shape[0], dimx, dimy, inputTifFiles[0]))
 		if img.dtype != dtype:
 			raise IOError("File %s dtype %s does not agree with expected %s of file %s"%(os.paht.basename(f), img.dtype, dtype, os.path.basename(inputTifFiles[0])))
+		if exportInfo:
+			info[0, i] = np.float32(scanData[scanData["image_file"]==fileName].index[0])
+			info[1, i] = np.float32(scanData[scanData["image_file"]==fileName]["s_rot"].iloc[0])
 		if darkFrame is not None:
 			img = img - darkFrame
 		if targetCurrentValue is not None:
 		#ARG = parser.parse_args([])
-			fileName = os.path.basename(f)
 			frameCurrent = scanData[scanData["image_file"]==fileName]["current"].iloc[0]
 			factor = targetCurrentValue/frameCurrent
 			img = img * factor
@@ -85,7 +95,9 @@ def writeDenFile(inputTifFiles, denFile, force=False, darkFrame = None, darkFram
 			img[img < 0] = 0
 			frame[i] = img
 	if not ARG.float32:
-		DEN.storeNdarrayAsDEN(denFile, frame)
+		DEN.storeNdarrayAsDEN(denFile, frame, force=force)
+	if exportInfo:
+		DEN.storeNdarrayAsDEN("%s.info"%(denFile), info, force=force)
 
 if ARG.verbose:
 	print("Start of the script")
@@ -106,4 +118,4 @@ if ARG.current_correction:
 		print("You have to provice h5file to be albe to perform current correction")
 		sys.exit(-1)
 	print("Will perform current correction to targetValue %f"%(targetCurrentValue))
-writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf)
+writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, exportInfo = ARG.export_info, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf)
