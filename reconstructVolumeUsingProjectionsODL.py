@@ -49,6 +49,7 @@ parser.add_argument("--suffix", default="")
 parser.add_argument("--output-folder", default=".")
 parser.add_argument("--store-projections", default=None)
 parser.add_argument("--angles-mat", default=None)
+parser.add_argument("--angles-den", default=None)
 parser.add_argument("--theta-zero", type=float, default=0, help="Initial angle theta from Radon transform in degrees, defaults to zero. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html")
 parser.add_argument("--theta-angular-range", type=float, default=360, help="This is angular range in degrees, along which possitions are distributed.")
 parser.add_argument("--material-ct-convention", action="store_true", default=False, help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
@@ -309,6 +310,13 @@ if ARG.angles_mat is not None:
 	angles = angles.reshape((angles.shape[0]))#It is array of the shape (angles.shape[0], 1) and ODL does not like it
 	if len(angles) != angles_count:
 		print("INCOMPATIBLE ANGLES DIMENSIONS!")
+		os.sys.exit(1)
+elif ARG.angles_den is not None:
+	info = DEN.getFrame(ARG.angles_den, 0)
+	angles = info[1]
+	angles = list(degToRad(x) for x in angles)
+	if len(angles) != angles_count:
+		print("angles_count=%d is not equal len(angles)=%d!"%(angles_count, len(angles)))
 		os.sys.exit(1)
 else:
 	angles = np.linspace(
