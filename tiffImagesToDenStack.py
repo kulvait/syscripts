@@ -34,13 +34,15 @@ parser.add_argument("--dark-field-correction", type=str, help="Data of the dark 
 parser.add_argument("--dark-frame-inf", type=str, help="Data of the lowest admissible value after dark field correction, data less or equal to max(dark-frame-inf, 1.67 MAD_frame) will be set to  max(dark-frame-inf, 1.67 MAD_frame).", default=None)
 parser.add_argument("--export-info", action="store_true")
 parser.add_argument("--mean-correction", action="store_true", help="Create resulting mean images to be the same")
+parser.add_argument("--median-correction", action="store_true")
+parser.add_argument("--gamma", type=float, help="Decode using given gamma value, try 2.2", default=None)
 
 #ARG = parser.parse_args([])
 ARG = parser.parse_args()
 
 
 #To write dataframe to den
-def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, meanCorrection = False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None):
+def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, meanCorrection = False, medianCorrection=False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None, gamma=None):
 	if os.path.exists(denFile):
 		if force:
 			os.remove(denFile)
@@ -81,10 +83,14 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 			raise IOError("File %s shape (%d, %d) does not agree with expected (%d, %d) of %s"%(os.path.basename(f), img.shape[0], img.shape[0], dimx, dimy, inputTifFiles[0]))
 		if img.dtype != dtype:
 			raise IOError("File %s dtype %s does not agree with expected %s of file %s"%(os.path.basename(f), img.dtype, dtype, os.path.basename(inputTifFiles[0])))
+		if ARG.float32:
+			img = np.float32(img)
 		if exportInfo:
 			info[0, i] = np.float64(scanData[scanData["image_file"]==fileName].index[0])
 			info[1, i] = np.float64(scanData[scanData["image_file"]==fileName]["s_rot"].iloc[0])
 			info[2, i] = np.float64(scanData[scanData["image_file"]==fileName]["current"].iloc[0])
+		if gamma is not None:
+			img = np.power(img, gamma)
 		if darkFrame is not None:
 			img = img - darkFrame
 		if targetCurrentValue is not None:
@@ -97,18 +103,29 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 				img = np.maximum(darkFrameInf, img)
 			else:
 				img[img < minimumAdmissibleValue] = minimumAdmissibleValue
-			DEN.writeFrame(denFile, i, img.astype(np.float32), True)
 		else:
 			img[img < 0] = 0
 			frame[i] = img
+		mean = np.mean(img)
+		median = np.median(img)
 		if meanCorrection:
 			if i == 0:
-				mean0 = np.mean(img)
+				mean0 = mean
 			else:
-				mean = np.mean(img)
 				img = img * (mean0/mean)
+				mean = mean0
+				median = median *  (mean0/mean)
+		if medianCorrection:
+			if i == 0:
+				median0 = median
+			else:
+				img = img * (median0/median)
+				mean = mean * (median0/median)
+				median = median0
+		if ARG.float32:
+			DEN.writeFrame(denFile, i, img.astype(np.float32), force=True)
 		if ARG.verbose:
-			print("Processed %d frame in %0.3fs"%(i, timer()-start))
+			print("Processed %d frame in %0.3fs mean=%f"%(i, timer()-start, mean))
 	if not ARG.float32:
 		DEN.storeNdarrayAsDEN(denFile, frame, force=force)
 	if exportInfo:
@@ -120,6 +137,9 @@ darkFrame = None
 scanData = None
 targetCurrentValue = None
 darkFrameInf = None
+gamma=None
+if ARG.gamma is not None:
+	gamma = ARG.gamma
 if ARG.h5file is not None:
 	scanData = PETRA.scanDataset(ARG.h5file)
 if ARG.dark_field_correction is not None:
@@ -133,4 +153,4 @@ if ARG.current_correction:
 		print("You have to provice h5file to be albe to perform current correction")
 		sys.exit(-1)
 	print("Will perform current correction to targetValue %f"%(targetCurrentValue))
-writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, exportInfo = ARG.export_info, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf)
+writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, exportInfo = ARG.export_info, meanCorrection = ARG.mean_correction, medianCorrection=ARG.median_correction, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf, gamma=gamma)
