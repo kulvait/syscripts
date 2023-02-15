@@ -42,7 +42,7 @@ ARG = parser.parse_args()
 
 
 #To write dataframe to den
-def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, meanCorrection = False, medianCorrection=False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None, gamma=None):
+def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, meanCorrection = False, medianCorrection=False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None, gamma=None, minimumAdmissibleValue=None):
 	if os.path.exists(denFile):
 		if force:
 			os.remove(denFile)
@@ -63,7 +63,7 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 		# info[1,:] angle in degrees
 		# info[2,:] beam current in mA in the time of acquisition
 	#for i in range(len(inputTifFiles)):
-	minimumAdmissibleValue = 0.0
+	#minimumAdmissibleValue = 0.0
 	#Correct by 1.67 MAD
 	if darkFrame is not None:
 		MAD_frame = np.median(np.absolute(darkFrame - np.median(darkFrame)))
@@ -71,7 +71,8 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 		if darkFrameInf is not None:
 			darkFrameInf[darkFrameInf < minimumAdmissibleValue] = minimumAdmissibleValue
 	if ARG.verbose:
-		print("Correction value of the minimum signal is %f"%(minimumAdmissibleValue))
+		if minimumAdmissibleValue is not None:
+			print("Correction value of the minimum signal is %f"%(minimumAdmissibleValue))
 	mean0 = 0.0
 	for i in range(len(inputTifFiles)):
 		start = timer()
@@ -102,7 +103,8 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 			if darkFrameInf is not None:
 				img = np.maximum(darkFrameInf, img)
 			else:
-				img[img < minimumAdmissibleValue] = minimumAdmissibleValue
+				if minimumAdmissibleValue is not None:
+					img[img < minimumAdmissibleValue] = minimumAdmissibleValue
 		else:
 			img[img < 0] = 0
 			frame[i] = img

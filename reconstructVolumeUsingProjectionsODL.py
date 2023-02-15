@@ -52,6 +52,7 @@ parser.add_argument("--angles-mat", default=None)
 parser.add_argument("--angles-den", default=None)
 parser.add_argument("--theta-zero", type=float, default=0, help="Initial angle theta from Radon transform in degrees, defaults to zero. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html")
 parser.add_argument("--theta-angular-range", type=float, default=360, help="This is angular range in degrees, along which possitions are distributed.")
+parser.add_argument("--theta-endpoint", action="store_true", help="If to include endpoint in the range.")
 parser.add_argument("--material-ct-convention", action="store_true", default=False, help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
 parser.add_argument("--offset-mat", default=None)
 parser.add_argument("--offset-x", default=0.0, type=float)
@@ -309,7 +310,7 @@ if ARG.angles_mat is not None:
 	angles = matlab_dic["angles"]
 	angles = angles.reshape((angles.shape[0]))#It is array of the shape (angles.shape[0], 1) and ODL does not like it
 	if len(angles) != angles_count:
-		print("INCOMPATIBLE ANGLES DIMENSIONS!")
+		print("INCOMPATIBLE ANGLES DIMENSIONS len(angles)=%d and angles_count=%d!"%(len(angles), angles_count))
 		os.sys.exit(1)
 elif ARG.angles_den is not None:
 	info = DEN.getFrame(ARG.angles_den, 0)
@@ -327,7 +328,7 @@ else:
 	    endpoint=False)  #Equally spaced values which has sin.shape[0] voids
 	theta_zero = degToRad(ARG.theta_zero)
 	theta_angular_range = degToRad(ARG.theta_angular_range)
-	angles = np.linspace(theta_zero, theta_zero + theta_angular_range, num=angles_count, endpoint=False)
+	angles = np.linspace(theta_zero, theta_zero + theta_angular_range, num=angles_count, endpoint=ARG.theta_endpoint)
 #Detector dimensions from projection data
 min_px = -0.5 * ARG.pixel_sizex * col_count
 max_px = 0.5 * ARG.pixel_sizex * col_count 
