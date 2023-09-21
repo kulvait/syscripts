@@ -31,11 +31,13 @@ parser.add_argument("--h5file", type=str, help="H5 file to read data for exposur
 parser.add_argument("--current-correction", action="store_true")
 parser.add_argument("--target-current-value", type=float, help="Current to correct to [default 100mA]", default=100)
 parser.add_argument("--dark-field-correction", type=str, help="Data of the dark field to subtract before current correction", default=None)
-parser.add_argument("--dark-frame-inf", type=str, help="Data of the lowest admissible value after dark field correction, data less or equal to max(dark-frame-inf, 1.67 MAD_frame) will be set to  max(dark-frame-inf, 1.67 MAD_frame).", default=None)
 parser.add_argument("--export-info", action="store_true")
 parser.add_argument("--mean-correction", action="store_true", help="Create resulting mean images to be the same")
 parser.add_argument("--median-correction", action="store_true")
+parser.add_argument("--dark-mad-correction", action="store_true", help="Use 1.67 MAD_frame as minimum admissible value")
 parser.add_argument("--gamma", type=float, help="Decode using given gamma value, try 2.2", default=None)
+parser.add_argument('--minimum-admissible-value', type=float, help="Use this as a minimum admissible value and put values after correction less than this value to this value", default=None)
+parser.add_argument("--dark-frame-inf", type=str, help="Data of the lowest admissible value after dark field correction, data less or equal to dark-frame-inf will be set to dark-frame-inf.", default=None)
 
 #ARG = parser.parse_args([])
 ARG = parser.parse_args()
@@ -53,10 +55,11 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 	dimy = img.shape[0]
 	dimx = img.shape[1]
 	dtype = img.dtype
-	if not ARG.float32:
-		frame = np.zeros([len(inputTifFiles), dimy, dimx], dtype=dtype)
 	if ARG.float32:
-		DEN.writeEmptyDEN(denFile, [dimx, dimy, len(inputTifFiles)], force=True)
+		outtype = np.dtype("<f4")
+	else:
+		outtype = dtype
+	DEN.writeEmptyDEN(denFile, [dimx, dimy, len(inputTifFiles)], elementtype=outtype, force=True)
 	if exportInfo:
 		info = np.zeros([3,len(inputTifFiles)], dtype=np.float64)
 		# info[0,:] time in the format usual in synchrotron description in ms
@@ -64,15 +67,11 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 		# info[2,:] beam current in mA in the time of acquisition
 	#for i in range(len(inputTifFiles)):
 	#minimumAdmissibleValue = 0.0
-	#Correct by 1.67 MAD
-	if darkFrame is not None:
-		MAD_frame = np.median(np.absolute(darkFrame - np.median(darkFrame)))
-		minimumAdmissibleValue = np.float32(1.67 * MAD_frame)
+	if minimumAdmissibleValue is not None:
 		if darkFrameInf is not None:
 			darkFrameInf[darkFrameInf < minimumAdmissibleValue] = minimumAdmissibleValue
-	if ARG.verbose:
-		if minimumAdmissibleValue is not None:
-			print("Correction value of the minimum signal is %f"%(minimumAdmissibleValue))
+		else:
+			darkFrameInf = np.array(np.ones((dimy, dimx), dtype=outtype)*minimumAdmissibleValue, dtype=outtype)
 	mean0 = 0.0
 	for i in range(len(inputTifFiles)):
 		start = timer()
@@ -99,15 +98,8 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 			frameCurrent = scanData[scanData["image_file"]==fileName]["current"].iloc[0]
 			factor = targetCurrentValue/frameCurrent
 			img = img * factor
-		if ARG.float32:
-			if darkFrameInf is not None:
-				img = np.maximum(darkFrameInf, img)
-			else:
-				if minimumAdmissibleValue is not None:
-					img[img < minimumAdmissibleValue] = minimumAdmissibleValue
-		else:
-			img[img < 0] = 0
-			frame[i] = img
+		if darkFrameInf is not None:
+			img = np.maximum(darkFrameInf, img)
 		mean = np.mean(img)
 		median = np.median(img)
 		if meanCorrection:
@@ -124,12 +116,9 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 				img = img * (median0/median)
 				mean = mean * (median0/median)
 				median = median0
-		if ARG.float32:
-			DEN.writeFrame(denFile, i, img.astype(np.float32), force=True)
+		DEN.writeFrame(denFile, i, img.astype(outtype), force=True)
 		if ARG.verbose:
 			print("Processed %d frame in %0.3fs mean=%f"%(i, timer()-start, mean))
-	if not ARG.float32:
-		DEN.storeNdarrayAsDEN(denFile, frame, force=force)
 	if exportInfo:
 		DEN.storeNdarrayAsDEN("%s.info"%(denFile), info, force=force)
 
@@ -140,12 +129,22 @@ scanData = None
 targetCurrentValue = None
 darkFrameInf = None
 gamma=None
+minimumAdmissibleValue=None
+if ARG.minimum_admissible_value is not None:
+	minimumAdmissibleVlue = ARG.minimum_admissible_value
 if ARG.gamma is not None:
 	gamma = ARG.gamma
 if ARG.h5file is not None:
 	scanData = PETRA.scanDataset(ARG.h5file)
 if ARG.dark_field_correction is not None:
 	darkFrame = DEN.getFrame(ARG.dark_field_correction, 0)
+	if ARG.dark_mad_correction:
+		MAD_frame = np.median(np.absolute(darkFrame - np.median(darkFrame)))
+		madValue = np.float32(1.67 * MAD_frame)
+		if minimumAdmissibleValue is None:
+			minimumAdmissibleValue = madValue
+		else:
+			minimumAdmissibleValue = max(minimumAdmissibleValue, madValue)
 if ARG.dark_frame_inf is not None:
 	print("Using %s as inf value for correction"%(os.path.basename(ARG.dark_frame_inf)))
 	darkFrameInf = DEN.getFrame(ARG.dark_frame_inf, 0)
@@ -155,4 +154,4 @@ if ARG.current_correction:
 		print("You have to provice h5file to be albe to perform current correction")
 		sys.exit(-1)
 	print("Will perform current correction to targetValue %f"%(targetCurrentValue))
-writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, exportInfo = ARG.export_info, meanCorrection = ARG.mean_correction, medianCorrection=ARG.median_correction, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf, gamma=gamma)
+writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, exportInfo = ARG.export_info, meanCorrection = ARG.mean_correction, medianCorrection=ARG.median_correction, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf, gamma=gamma, minimumAdmissibleValue=minimumAdmissibleValue)
