@@ -30,7 +30,11 @@ inputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/ivw0032_Referenz_blau_4_00
 outputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/kulvait_scratch/ivw0032_Referenz_blau_4_000/astra"
 
 parser = argparse.ArgumentParser()
-parser.add_argument("inputProjections", help="Input projection data. In case of file it is assumed to be den file with projections. In case of directory it is assumed to contain tif projections.")
+parser.add_argument(
+    "inputProjections",
+    help=
+    "Input projection data. In case of file it is assumed to be den file with projections. In case of directory it is assumed to contain tif projections."
+)
 parser.add_argument("--cgls", action="store_true")
 parser.add_argument("--sirt", action="store_true")
 parser.add_argument("--sart", action="store_true")
@@ -46,9 +50,26 @@ parser.add_argument("--suffix", default="")
 parser.add_argument("--output-folder", default=".")
 parser.add_argument("--store-projections", default=None)
 parser.add_argument("--angles-mat", default=None)
-parser.add_argument("--theta-zero", type=float, default=0, help="Initial angle theta from Radon transform in degrees, defaults to zero. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html")
-parser.add_argument("--theta-angular-range", type=float, default=360, help="This is angular range in degrees, along which possitions are distributed.")
-parser.add_argument("--material-ct-convention", action="store_true", default=False, help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
+parser.add_argument(
+    "--theta-zero",
+    type=float,
+    default=0,
+    help=
+    "Initial angle theta from Radon transform in degrees, defaults to zero. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html"
+)
+parser.add_argument(
+    "--theta-angular-range",
+    type=float,
+    default=360,
+    help=
+    "This is angular range in degrees, along which possitions are distributed.")
+parser.add_argument(
+    "--material-ct-convention",
+    action="store_true",
+    default=False,
+    help=
+    "The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html."
+)
 parser.add_argument("--itterations", type=int, default=100)
 parser.add_argument("--platform-id", type=str, default="0:0")
 #parser.add_argument('--box-sizex',
@@ -97,15 +118,27 @@ parser.add_argument('--pixel-sizey',
                     default=0.00255076)
 parser.add_argument('--yrange-from', type=int, default=None)
 parser.add_argument('--yrange-to', type=int, default=None)
-parser.add_argument("--detector-center-offsetvx", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
-parser.add_argument("--detector-center-offsetvy", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
+parser.add_argument(
+    "--detector-center-offsetvx",
+    type=float,
+    default=0.,
+    help=
+    "Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0."
+)
+parser.add_argument(
+    "--detector-center-offsetvy",
+    type=float,
+    default=0.,
+    help=
+    "Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0."
+)
 
 ARG = parser.parse_args()
 #sin=sin[1::2]
 #angles=angles[1::2]
 
 if not (ARG.savetiff or ARG.saveden):
-    parser.error('Provide either --saveden or --savetiff.')
+	parser.error('Provide either --saveden or --savetiff.')
 
 
 def parsePlatformString(platformId):
@@ -116,11 +149,14 @@ def parsePlatformString(platformId):
 	gpu = tk[1]
 	return int(tk[1])
 
+
 gpuid = parsePlatformString(ARG.platform_id)
 astra.astra.set_gpu_index(gpuid)
 
+
 def degToRad(angle):
-	return np.pi*angle/180
+	return np.pi * angle / 180
+
 
 def getFileNum(filePath):
 	numberSearch = re.search(r"(\d*).tif", filePath)
@@ -156,6 +192,7 @@ def parseParamFile(logFile):
 		return dct
 	return None
 
+
 def writeDenFile(volume, denFile, force=False):
 	if os.path.exists(denFile):
 		if force:
@@ -168,6 +205,7 @@ def writeDenFile(volume, denFile, force=False):
 	DEN.writeEmptyDEN(denFile, [dimx, dimy, dimz], force=force)
 	for k in range(dimz):
 		DEN.writeFrame(denFile, k, volume[k, :, :], force=force)
+
 
 def writeTiffFiles(volume, tiffFilePattern, force=False):
 	dimy = volume.shape[1]
@@ -182,9 +220,11 @@ def writeTiffFiles(volume, tiffFilePattern, force=False):
 			if force:
 				os.remove(tiffFile)
 			else:
-				raise IOError("File %s exists, add force to overwrite" % (tiffFile))
-		im = Image.fromarray(volume[k,:,:], mode='F')  # float32
+				raise IOError("File %s exists, add force to overwrite" %
+				              (tiffFile))
+		im = Image.fromarray(volume[k, :, :], mode='F')  # float32
 		im.save(tiffFile, "TIFF")
+
 
 def createProjectorConfig(projectorName, projectionsID, volumeID, usegpu=True):
 	#cfg = {}
@@ -200,7 +240,12 @@ def createProjectorConfig(projectorName, projectionsID, volumeID, usegpu=True):
 	return cfg
 
 
-def generateAstraParallel3d_vec(angles, det_width, det_height, offsetvx=None, offsetvy=None, material_ct_convention = None):
+def generateAstraParallel3d_vec(angles,
+                                det_width,
+                                det_height,
+                                offsetvx=None,
+                                offsetvy=None,
+                                material_ct_convention=None):
 	if offsetvx is None:
 		offsetvx = 0.
 	if offsetvy is None:
@@ -216,8 +261,8 @@ def generateAstraParallel3d_vec(angles, det_width, det_height, offsetvx=None, of
 		vectors[i, 1] = -np.cos(theta)
 		vectors[i, 2] = 0.
 		#center of detector
-		vectors[i, 3] = 0. + np.cos(theta)*offsetvx
-		vectors[i, 4] = 0. + np.sin(theta)*offsetvx
+		vectors[i, 3] = 0. + np.cos(theta) * offsetvx
+		vectors[i, 4] = 0. + np.sin(theta) * offsetvx
 		vectors[i, 5] = offsetvy
 		# vector from detector pixel (0,0) to (0,1)
 		vectors[i, 6] = np.cos(theta) * det_width
@@ -231,6 +276,7 @@ def generateAstraParallel3d_vec(angles, det_width, det_height, offsetvx=None, of
 		else:
 			vectors[i, 11] = -det_height
 	return (vectors)
+
 
 def transformToExtinction(invertedProjectionIntensities):
 	#DEBUG ... another scaling
@@ -248,22 +294,27 @@ def transformToExtinction(invertedProjectionIntensities):
 #=================INPUT PROJECTION DATA===============
 sec = time.time()
 if os.path.isdir(ARG.inputProjections):
-	pth=os.path.join(ARG.inputProjections, "*.tif")
+	pth = os.path.join(ARG.inputProjections, "*.tif")
 	tifFiles = glob.glob(pth)
 	tifFiles.sort()
 	if len(tifFiles) == 0:
-		raise(IOError("The path %s contains %d *.tif projections."%(pth, len(tifFiles))))
-	print("The path %s contains %d *.tif projections."%(pth, len(tifFiles)))
+		raise (IOError("The path %s contains %d *.tif projections." %
+		               (pth, len(tifFiles))))
+	print("The path %s contains %d *.tif projections." % (pth, len(tifFiles)))
 	tif = TIFF.open(tifFiles[0])
 	img = tif.read_image()
 	row_count = img.shape[0]
 	col_count = img.shape[1]
 	angles_count = len(tifFiles)
 	if ARG.verbose:
-		print("First projection %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."% (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(), img.max(), img.mean()))
+		print(
+		    "First projection %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
+		    % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
+		       img.max(), img.mean()))
 	if ARG.yrange_from is not None:
 		row_count = ARG.yrange_to - ARG.yrange_from
-	projectionData = np.zeros(shape=(row_count, angles_count, col_count), dtype=np.float32)
+	projectionData = np.zeros(shape=(row_count, angles_count, col_count),
+	                          dtype=np.float32)
 	for i in range(len(tifFiles)):
 		f = tifFiles[i]
 		img = TIFF.open(f)
@@ -272,7 +323,7 @@ if os.path.isdir(ARG.inputProjections):
 			img = img[ARG.yrange_from:ARG.yrange_to, :]
 		if ARG.neglog:
 			img = np.log(np.reciprocal(img))
-		projectionData[:,i,:] = img 
+		projectionData[:, i, :] = img
 		if ARG.verbose and i % 10 == 0:
 			print("Read file %d of %d" % (i + 1, len(tifFiles)))
 else:
@@ -281,14 +332,22 @@ else:
 	angles_count = projectionData.shape[1]
 	if ARG.yrange_from is not None:
 		projectionData = projectionData[ARG.yrange_from:ARG.yrange_to, :]
-	row_count=projectionData.shape[0]
-	col_count=projectionData.shape[2]
+	row_count = projectionData.shape[0]
+	col_count = projectionData.shape[2]
 	if ARG.neglog:
 		projectionData = np.log(np.reciprocal(projectionData))
 	if ARG.verbose:
-		print("Projection data in the file %s has dimensions height=%d angles=%d width=%d dtype=%s min=%f, max=%f, mean=%f."%(ARG.inputProjections, projectionData.shape[0], projectionData.shape[1], projectionData.shape[2], projectionData.dtype, projectionData.min(), projectionData.max(), projectionData.mean()))
+		print(
+		    "Projection data in the file %s has dimensions height=%d angles=%d width=%d dtype=%s min=%f, max=%f, mean=%f."
+		    % (ARG.inputProjections, projectionData.shape[0],
+		       projectionData.shape[1], projectionData.shape[2],
+		       projectionData.dtype, projectionData.min(), projectionData.max(),
+		       projectionData.mean()))
 if ARG.store_projections is not None:
-	DEN.storeNdarrayAsDEN(os.path.join(ARG.output_folder, ARG.store_projections), np.swapaxes(projectionData, 0, 1), force=ARG.force)
+	DEN.storeNdarrayAsDEN(os.path.join(ARG.output_folder,
+	                                   ARG.store_projections),
+	                      np.swapaxes(projectionData, 0, 1),
+	                      force=ARG.force)
 #Now I created structure with projections let's focus on angles
 if ARG.angles_mat is not None:
 	matlab_dic = scipy.io.loadmat(ARG.angles_mat)
@@ -296,14 +355,19 @@ if ARG.angles_mat is not None:
 else:
 	theta_zero = degToRad(ARG.theta_zero)
 	theta_angular_range = degToRad(ARG.theta_angular_range)
-	angles = np.linspace(theta_zero, theta_zero + theta_angular_range, num=angles_count, endpoint=False)
+	angles = np.linspace(theta_zero,
+	                     theta_zero + theta_angular_range,
+	                     num=angles_count,
+	                     endpoint=False)
 
 #Geometry setup
 if len(angles) != angles_count:
 	print("INCOMPATIBLE ANGLES DIMENSIONS!")
 	os.sys.exit(1)
-vectors = generateAstraParallel3d_vec(angles, ARG.pixel_sizex,
-                                                ARG.pixel_sizey, ARG.detector_center_offsetvx, ARG.detector_center_offsetvy, ARG.material_ct_convention)
+vectors = generateAstraParallel3d_vec(angles, ARG.pixel_sizex, ARG.pixel_sizey,
+                                      ARG.detector_center_offsetvx,
+                                      ARG.detector_center_offsetvy,
+                                      ARG.material_ct_convention)
 proj_geom = astra.create_proj_geom('parallel3d_vec', row_count, col_count,
                                    vectors)
 #logFile = getReconLog(tifFiles[0])
@@ -356,11 +420,11 @@ else:
 if ARG.voxel_sizez is None:
 	VOXELZ = ARG.pixel_sizey
 else:
-	VOXELZ=ARG.voxel_sizez
-min_x = -0.5*vx_count*VOXELX
-max_x = 0.5*vx_count*VOXELX
-min_y = -0.5*vy_count*VOXELY
-max_y = 0.5*vy_count*VOXELY
+	VOXELZ = ARG.voxel_sizez
+min_x = -0.5 * vx_count * VOXELX
+max_x = 0.5 * vx_count * VOXELX
+min_y = -0.5 * vy_count * VOXELY
+max_y = 0.5 * vy_count * VOXELY
 min_z = -0.5 * ARG.pixel_sizey * vz_count
 max_z = 0.5 * ARG.pixel_sizey * vz_count
 
@@ -370,7 +434,7 @@ if not os.path.exists(ARG.output_folder):
 outputName = "reconstructVolumeUsingProjectionsAstra_%s" % ARG.suffix
 outputPattern = os.path.join(ARG.output_folder, outputName)
 if ARG.saveden:
-	outputFileName="%s.den" % (outputPattern)
+	outputFileName = "%s.den" % (outputPattern)
 	if os.path.exists(outputFileName) and not ARG.force:
 		print("File %s exist, add --force to overwrite." % ARG.outputDEN)
 		os.sys.exit(1)
@@ -415,7 +479,6 @@ volume = astra.data3d.get(vol_id)
 print("Output volume has dimensions %dx%dx%d and type %s" %
       (volume.shape[0], volume.shape[1], volume.shape[2], volume.dtype))
 
-
 fullOutputName = os.path.join(ARG.output_folder, outputName)
 
 if ARG.saveden:
@@ -423,7 +486,7 @@ if ARG.saveden:
 if ARG.savetiff:
 	writeTiffFiles(volume, outputPattern, ARG.force)
 sec = time.time() - sec
-print("Time %0.2fs"%(sec))
+print("Time %0.2fs" % (sec))
 
 with open("%s.log" % (fullOutputName), 'wt') as f:
 	json.dump(vars(ARG), f, indent=4)

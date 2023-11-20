@@ -33,12 +33,12 @@ parser.add_argument("--y-to", type=int, default=None)
 #ARG = parser.parse_args([])
 ARG = parser.parse_args()
 
-
 if os.path.exists(ARG.outputTif):
 	if force:
 		os.remove(ARG.outputTif)
 	else:
-		raise IOError("File %s exists, add force to overwrite" % (ARG.outputTiff))
+		raise IOError("File %s exists, add force to overwrite" %
+		              (ARG.outputTiff))
 im0 = Image.open(ARG.inputTif)
 img = np.array(im0)
 dimy = img.shape[0]

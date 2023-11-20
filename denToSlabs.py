@@ -28,8 +28,8 @@ parser.add_argument('--last-index', type=int, default=None)
 parser.add_argument('--slab-width', type=int, default=None)
 parser.add_argument('--suffix', type=str, default="")
 
-
 ARG = parser.parse_args()
+
 
 #To create dataframe with given columns
 def insertToDf(df, dat, name):
@@ -40,11 +40,12 @@ def insertToDf(df, dat, name):
 		v = value[i]
 		df.loc[t][name] = v
 
+
 def writeSlabs(ARG, images, outputDen, force=None):
 	if force is None:
-		force=False
+		force = False
 	if ARG.verbose:
-		print("Preparing file %s"%outputDen)
+		print("Preparing file %s" % outputDen)
 	row_count = images.shape[1]
 	col_count = images.shape[1]
 	angles_count = images.shape[0]
@@ -53,17 +54,21 @@ def writeSlabs(ARG, images, outputDen, force=None):
 		return
 	if ARG.slab_width is not None:
 		for i in range(0, row_count, ARG.slab_width):
-			fileName = slabFileName(ARG.outputDen, i, i+ARG.slab_width)
-			DEN.storeNdarrayAsDEN(fileName, images[:,i:i+ARG.slab_width,:], force=force)
+			fileName = slabFileName(ARG.outputDen, i, i + ARG.slab_width)
+			DEN.storeNdarrayAsDEN(fileName,
+			                      images[:, i:i + ARG.slab_width, :],
+			                      force=force)
 	else:
 		DEN.storeNdarrayAsDEN(outputDen, images, force=force)
 
+
 def slabFileName(origName, fromID, toID):
 	f = origName.rsplit('.', 1)
-	fileName = "%sfrom_%05d_to_%05d"%(f[0], fromID, toID);
+	fileName = "%sfrom_%05d_to_%05d" % (f[0], fromID, toID)
 	if len(f) == 2:
-		fileName = "%s%s.%s"%(fileName, ARG.suffix, f[1])
+		fileName = "%s%s.%s" % (fileName, ARG.suffix, f[1])
 	return fileName
+
 
 den = DEN.getNumpyArray(ARG.inputDen)
 if ARG.first_index is not None:

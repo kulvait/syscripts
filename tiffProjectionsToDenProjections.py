@@ -31,12 +31,17 @@ parser.add_argument('--suffix', type=str, default="")
 
 ARG = parser.parse_args([
     "/asap3/petra3/gpfs/p07/2020/data/11009431/processed/bric022_369_a/trans03/",
-    "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.prj50", "--slab-width", "100",
-    "--verbose"#, "--store-sinogram", "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.sin"
-	,"--slab-width", "50"
+    "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.prj50",
+    "--slab-width",
+    "100",
+    "--verbose"  #, "--store-sinogram", "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.sin"
+    ,
+    "--slab-width",
+    "50"
 ])
 
 ARG = parser.parse_args()
+
 
 #To create dataframe with given columns
 def insertToDf(df, dat, name):
@@ -80,33 +85,37 @@ def writeDenFile(df, inputDir, denFile, force=False):
 		#img = img.read_image()
 		im = Image.open(f)
 		img = np.array(im)
-		print("Writing %d-th file %s with orientation %d of shape %d,%d into %s" %
-		      (i, fileStr, ori, img.shape[0], img.shape[1], denFile))
+		print(
+		    "Writing %d-th file %s with orientation %d of shape %d,%d into %s" %
+		    (i, fileStr, ori, img.shape[0], img.shape[1], denFile))
 		DEN.writeFrame(denFile, i, img, True)
+
 
 def writeSlabs(ARG, tifFiles, outputDen, force=None):
 	if force is None:
-		force=False
+		force = False
 	if ARG.verbose:
-		print("Preparing file %s"%outputDen)
+		print("Preparing file %s" % outputDen)
 	#tif = TIFF.open(tifFiles[0])
 	#img = tif.read_image()
 	im = Image.open(tifFiles[0])
 	img = np.array(im)
-	dct = {TAGS[key] : im.tag[key] for key in im.tag}
+	dct = {TAGS[key]: im.tag[key] for key in im.tag}
 	print(dct)
 	o = im.tag["Orientation"]
-	print("Orientation %d"%(o))
+	print("Orientation %d" % (o))
 	row_count = img.shape[0]
 	col_count = img.shape[1]
 	angles_count = len(tifFiles)
 	if ARG.verbose:
-		print("There is %d files of assumed dimensions HEIGHT=%d WIDTH=%d"%(angles_count, row_count, col_count))
+		print("There is %d files of assumed dimensions HEIGHT=%d WIDTH=%d" %
+		      (angles_count, row_count, col_count))
 		print(
-	    "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
-	    % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
-	       img.max(), img.mean()))
-	images = np.zeros(shape=(angles_count, row_count, col_count), dtype=np.float32)
+		    "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
+		    % (tifFiles[0], img.shape[0], img.shape[1], img.dtype, img.min(),
+		       img.max(), img.mean()))
+	images = np.zeros(shape=(angles_count, row_count, col_count),
+	                  dtype=np.float32)
 	for i in range(len(tifFiles)):
 		f = tifFiles[i]
 		#img = TIFF.open(f)
@@ -124,17 +133,21 @@ def writeSlabs(ARG, tifFiles, outputDen, force=None):
 	#I have created images structure, now cut it by slabs
 	if ARG.slab_width is not None:
 		for i in range(0, row_count, ARG.slab_width):
-			fileName = slabFileName(ARG.outputDen, i, i+ARG.slab_width)
-			DEN.storeNdarrayAsDEN(fileName, images[:,i:i+ARG.slab_width,:], force=force)
+			fileName = slabFileName(ARG.outputDen, i, i + ARG.slab_width)
+			DEN.storeNdarrayAsDEN(fileName,
+			                      images[:, i:i + ARG.slab_width, :],
+			                      force=force)
 	else:
 		DEN.storeNdarrayAsDEN(outputDen, images, force=force)
 
+
 def slabFileName(origName, fromID, toID):
 	f = origName.rsplit('.', 1)
-	fileName = "%sfrom_%05d_to_%05d"%(f[0], fromID, toID);
+	fileName = "%sfrom_%05d_to_%05d" % (f[0], fromID, toID)
 	if len(f) == 2:
-		fileName = "%s%s.%s"%(fileName, ARG.suffix, f[1])
+		fileName = "%s%s.%s" % (fileName, ARG.suffix, f[1])
 	return fileName
+
 
 if ARG.verbose:
 	print("Start of the script")

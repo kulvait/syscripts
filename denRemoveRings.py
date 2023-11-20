@@ -16,12 +16,11 @@ parser.add_argument("inputDen")
 parser.add_argument("outputDen")
 parser.add_argument("--force", action="store_true")
 
-
 ARG = parser.parse_args()
 
 if os.path.exists(ARG.outputDen):
 	if not ARG.force:
-		print("File %s exists add --force to overwrite!"%(ARG.outputDen))
+		print("File %s exists add --force to overwrite!" % (ARG.outputDen))
 
 den = DEN.getNumpyArray(ARG.inputDen)
 out = tomopy.remove_ring(den)

@@ -26,13 +26,13 @@ parser.add_argument("--verbose", action="store_true")
 ARG = parser.parse_args()
 
 
-
 def handleFileExistence(denFile, force):
 	if os.path.exists(denFile):
 		if force:
 			os.remove(denFile)
 		else:
 			raise IOError("File %s exists, add force to overwrite" % (denFile))
+
 
 #To write dataframe to den
 def writeDenFile(inputTifFiles, denFile, force=False):
@@ -42,8 +42,8 @@ def writeDenFile(inputTifFiles, denFile, force=False):
 	realPartTokens[0] = realPartTokens[0] + "_re"
 	imPartTokens[0] = imPartTokens[0] + "_im"
 	imaFile = ".".join(imPartTokens)
-	reaFile = ".".join(realPartTokens);
-	print("%s rePart=%s imPart=%s."%(denFile, reaFile, imaFile))
+	reaFile = ".".join(realPartTokens)
+	print("%s rePart=%s imPart=%s." % (denFile, reaFile, imaFile))
 	handleFileExistence(imaFile, force)
 	handleFileExistence(reaFile, force)
 	img = iio.imread(inputTifFiles[0])
@@ -57,17 +57,22 @@ def writeDenFile(inputTifFiles, denFile, force=False):
 		im = iio.imread(inputTifFiles[i])
 		img = np.array(im)
 		if img.shape[0] != dimx:
-			raise IOError("File %s shape %d does not agree with expected %d"%(file, img.shape[0], dimx))
+			raise IOError("File %s shape %d does not agree with expected %d" %
+			              (file, img.shape[0], dimx))
 		if img.shape[1] != dimy:
-			raise IOError("File %s shape %d does not agree with expected %d"%(file, img.shape[1], dimy))
+			raise IOError("File %s shape %d does not agree with expected %d" %
+			              (file, img.shape[1], dimy))
 		if img.dtype != dtype:
-			raise IOError("File %s dtype %s does not agree with expected %s"%(file, img.dtype, dtype))
+			raise IOError("File %s dtype %s does not agree with expected %s" %
+			              (file, img.dtype, dtype))
 		if img.dtype != dtype:
-			raise IOError("File %s dtype %s does not agree with expected %s"%(file, img.dtype, dtype))
+			raise IOError("File %s dtype %s does not agree with expected %s" %
+			              (file, img.dtype, dtype))
 		frameRe[i] = np.real(img)
 		frameIm[i] = np.imag(img)
 	DEN.storeNdarrayAsDEN(reaFile, frameRe)
 	DEN.storeNdarrayAsDEN(imaFile, frameIm)
+
 
 if ARG.verbose:
 	print("Start of the script")
