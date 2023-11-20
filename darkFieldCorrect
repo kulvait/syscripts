@@ -1,0 +1,90 @@
+#!/bin/bash
+echo "darkFieldCorrect $PWD"
+MINFLAT=1.0
+MINIMG=$(awk 'BEGIN {print 1.0/1024.0}')
+
+#Function to take raw DAR.den IMG.den and REF.den and produce 
+#ref_cor.den =  MAX(REF - DAR, MINFLAT) 
+#img_cor.den =  MIN(IMG - DAR, MINIMG)
+
+while getopts "m:f:p" o; do
+    case "${o}" in
+        m)
+            MINIMG=${OPTARG}
+            ;;
+        f)
+            MINFLAT=${OPTARG}
+            ;;
+        *)
+            usage
+			exit 0
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+usage() { echo "Usage: $0 [-m MINIMG, defaults to 1.0/1024.0 ] [-f MINFLT, defaults to 1.0]  DARK FLAT IMG FLATCOR IMGCOR" 1>&2; exit 1; }
+
+function testExistence(){
+if [[ ! -f $1 ]]; then
+    	echo "File $1 does not exist."
+		exit 1
+fi
+}
+
+function adjustImgValues(){
+    DARK=${1%.den}
+    FLAT=${2%.den}
+    IMG=${3%.den}
+    FLATCOR=${4%.den}
+    IMGCOR=${5%.den}
+	testExistence "${IMG}.den"
+	testExistence "${FLAT}.den"
+	testExistence "${DARK}.den"
+    rm -f ${FLATCOR}.den
+    rm -f ${IMGCOR}.den
+    ARG="--force -j 32"
+    dentk-framecalc1 --force --median ${DARK}.den ${DARK}_med
+    dentk-framecalc ${ARG} --subtract ${IMG}.den ${DARK}_med ${IMG}_sub
+    dentk-framecalc ${ARG} --subtract ${FLAT}.den ${DARK}_med ${FLAT}_sub
+    dentk-calc1 ${ARG} --max ${MINIMG} ${IMG}_sub ${IMGCOR}.den
+    dentk-calc1 ${ARG} --max ${MINFLAT} ${FLAT}_sub ${FLATCOR}.den
+    rm -f ${DARK}_med
+	rm -f ${IMG}_sub
+	rm -f ${FLAT}_sub
+}
+
+if [ "$#" -ne 5 ]; then
+	usage
+	exit 1
+fi
+
+DARK=$1
+FLAT=$2
+IMG=$3
+FLATCOR=$4
+IMGCOR=$5
+if [[ -f $FLATCOR && -f $IMGCOR ]]; then
+	echo "Files ${FLATCOR} ${IMGCOR} does exist this correction was probably jet succesfully performed, to rerun it remove."
+else
+	echo "Starting dark field correction wiht DAR=${DARK} FLAT=${FLAT} IMG=${IMG} to produce FLATCOR=${FLATCOR} and IMGCOR=${IMGCOR}"
+	adjustImgValues ${DARK} ${FLAT} ${IMG} ${FLATCOR} ${IMGCOR}
+fi
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

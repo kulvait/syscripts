@@ -17,6 +17,9 @@ import os
 import argparse
 from denpy import DEN
 from denpy import PETRA
+import io
+from contextlib import redirect_stdout
+from contextlib import redirect_stderr
 
 
 parser = argparse.ArgumentParser()
@@ -25,7 +28,18 @@ parser.add_argument("outputDir")
 parser.add_argument("--raw-dir", default=None, type=str, help="Provide raw directory where to find files, by default parrent directory of inputh5.")
 parser.add_argument("--force", action="store_true")
 
-ARG = parser.parse_args()
+try:
+	_out = io.StringIO()
+	_err = io.StringIO()
+	with redirect_stdout(_out):
+		with redirect_stderr(_err):
+			ARG = parser.parse_args(sys.argv[1:] or ['--help'])
+except SystemExit as err:
+	print("Program to produce dar.den ref.den and img.den files.")
+	sys.stderr.write(_err.getvalue())
+	sys.stdout.write(_out.getvalue())
+	sys.exit(err.code)
+#ARG = parser.parse_args()
 #ARG = parser.parse_args(["/home/user/desy_example_data/syn0101_17L_Ti_12w_000_nexus.h5", "/tmp/desy", "--force"])
 
 #To create dataframe with given columns
@@ -73,7 +87,7 @@ def writeDenFile(df, inputDir, denFile, force=False):
 if ARG.raw_dir is not None:
 	inputDir = ARG.raw_dir
 else:
-	inputDir = os.path.dirname(ARG.inputh5)
+	inputDir = os.path.dirname(os.path.realpath(ARG.inputh5))
 
 if not os.path.exists(ARG.outputDir):
     print("Create dir %s"%(ARG.outputDir))

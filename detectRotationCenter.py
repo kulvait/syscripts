@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Created 2022
+Created 2023
 
 @author: Vojtech Kulvait
 
@@ -45,7 +45,7 @@ ARG = parser.parse_args()
 if not os.path.isfile(ARG.inputFile):
 	raise IOError("File %s does not exist"%os.path.abspath(ARG.inputFile))
 else:
-	print("START 06detectRotationCenter.py for extinctions %s and H5 file %s"%(os.path.abspath(ARG.inputFile), os.path.abspath(ARG.inputH5)))
+	print("START detectRotationCenter.py for extinctions %s and H5 file %s"%(os.path.abspath(ARG.inputFile), os.path.abspath(ARG.inputH5)))
 
 if not os.path.exists(ARG.inputH5):
 	raise IOError("File %s does not exist"%os.path.abspath(ARG.inputH5))
@@ -88,6 +88,8 @@ def getInterpolatedFrame(inputFile, df, angle):
 		df = df.loc[df["s_rot"] == angle]
 		f = DEN.getFrame(ARG.inputFile, df["frame_ind"].iloc[0])
 		f = shiftFrameFloat(f, df["pixel_shift"].iloc[0])
+		if ARG.verbose:
+			print("Just shifted frame f by df[pixel_shift].iloc[0]=%f"%(df["pixel_shift"].iloc[0]))
 		if exactMatches > 1:
 			for k in range(exactMatches - 1):
 				g = DEN.getFrame(ARG.inputFile, df["frame_ind"][k])
@@ -152,16 +154,19 @@ df = PETRA.imageDataset(ARG.inputH5, includePixelShift=True, overrideMagnificati
 pixShifts = df["pixel_shift"]
 maxshift = pixShifts.max()
 minshift = pixShifts.min()
-ldrop = math.floor(maxshift)
-rdrop = math.ceil(minshift)
+ldrop = math.ceil(maxshift)
+rdrop = math.floor(minshift)
 drop = np.max([ldrop, -rdrop])
+if ARG.verbose:
+	print("maxshift=%f, minshift=%f, ldrop=%d, rdrop=%d, drop=%d"%(maxshift, minshift, ldrop, rdrop, drop))
 
 if ARG.load_sinograms is not None:
 	info = DEN.readHeader(ARG.load_sinograms)
 	if len(info["dimspec"]) != 3:
 		raise TypeError("Dimension of dimspec for file %s shall be 3 but is %d!"%(arg.load_sinograms, len(info["dimspec"])))
 	if info["dimspec"][1] != ARG.angle_count:
-		print("Setting angle_count to %d from ARG.angle_count %d"%(info["dimspec"][1], ARG.angle_count))
+		if ARG.verbose:
+			print("Setting angle_count to %d from ARG.angle_count %d"%(info["dimspec"][1], ARG.angle_count))
 		ARG.angle_count = info["dimspec"][1]
 		angleSequence = np.linspace(0, 360, num=ARG.angle_count, endpoint=False)
 	sinograms = DEN.getNumpyArray(ARG.load_sinograms)
@@ -428,4 +433,4 @@ if ARG.log_file:
 	sys.stdout.close()
 	sys.stdout = sys.__stdout__
 	os.rename("%s_tmp"%ARG.log_file, ARG.log_file)
-print("END 06detectRotationCenter.py for extinctions %s and H5 file %s"%(os.path.abspath(ARG.inputFile), os.path.abspath(ARG.inputH5)))
+print("END detectRotationCenter.py for extinctions %s and H5 file %s"%(os.path.abspath(ARG.inputFile), os.path.abspath(ARG.inputH5)))

@@ -24,6 +24,7 @@ import numpy as np
 import scipy
 from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
+import multiprocessing as mp
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFileA", help="DEN file A to create matrix of scalar products")
@@ -35,6 +36,7 @@ parser.add_argument("--count-right", default=None, type=int, help="Number of pro
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--log-file", default=None, help="Output to log file insted of stdout")
+parser.add_argument("--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]")
 ARG = parser.parse_args()
 
 if ARG.log_file:
@@ -70,14 +72,38 @@ if ARG.inverse is not None and colCount != rowCount:
 	raise IOError("To compute inverse rowcount=%d shall be equal to colCount=%d."%(rowCount, colCount))
 
 F = np.zeros(shape=(rowCount, colCount),dtype=np.float32)
-for i in range(rowCount):
-	A = DEN.getFrame(ARG.inputFileA, i)
-	for j in range(colCount):
-		if equalInputs and j < i and i < rowCount:
-			F[i, j] = F[j, i]
-		else:
-			B = DEN.getFrame(ARG.inputFileB, j)
-			F[i,j] = A.ravel().dot(B.ravel()) #See also https://stackoverflow.com/questions/44763910/multiply-2d-numpy-arrays-element-wise-and-sum
+
+if ARG.threads == -1:
+	ARG.threads = mp.cpu_count()
+	if ARG.verbose:
+		print("Will be computing products of A=%s and B=%s data with ARG.threads=mp.cpu_count()=%d."%(ARG.inputFileA, ARG.inputFileB, ARG.threads))
+
+#See also https://stackoverflow.com/questions/44763910/multiply-2d-numpy-arrays-element-wise-and-sum
+def tenzorProduct(A_ravel, B):
+	return A_ravel.dot(B.ravel())
+
+if ARG.threads != 0:
+	pool = mp.Pool(ARG.threads)
+	for i in range(rowCount):
+		A = DEN.getFrame(ARG.inputFileA, i)
+		A = A.ravel()
+		for j in range(colCount):
+			if equalInputs and j < i and i < rowCount:
+				F[i, j] = F[j, i]
+			else:
+				B = DEN.getFrame(ARG.inputFileB, j)
+				F[i, j] = pool.apply(tenzorProduct, args=(A, B))
+	pool.close()
+else:
+	for i in range(rowCount):
+		A = DEN.getFrame(ARG.inputFileA, i)
+		A = A.ravel()
+		for j in range(colCount):
+			if equalInputs and j < i and i < rowCount:
+				F[i, j] = F[j, i]
+			else:
+				B = DEN.getFrame(ARG.inputFileB, j)
+				F[i,j] = tenzorProduct(A, B)
 
 if ARG.inverse is not None:
 	I = np.linalg.inv(F)

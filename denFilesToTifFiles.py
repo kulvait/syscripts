@@ -7,7 +7,6 @@ Created on Mon Jan 31 15:15:23 2022
 """
 import h5py
 import pandas as pd
-from libtiff import TIFF
 from PIL import Image
 #pd.set_option('display.max_columns', 100) to display untruncated columns
 import sys
@@ -47,6 +46,9 @@ if header["dimcount"] < 2:
 	sys.exit(1)
 xdim = header["dimspec"][0]
 ydim = header["dimspec"][1]
+if not os.path.exists(ARG.outputDir):
+	os.makedirs(ARG.outputDir)
+
 if header["dimcount"] == 2:
 	writeSlice(DEN.getFrame(ARG.inputDen, 0), "%s/%s.tif"%(ARG.outputDir, ARG.suffix), ARG.force)
 else:

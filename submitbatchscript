@@ -1,0 +1,41 @@
+#!/bin/bash
+SCRIPT=$1
+DIR=$PWD
+DELAY=false
+PRINTONLY=false
+DELAYTIME=1
+cd $DIR
+echo "Executing script ${SCRIPT} in ${DIR}"
+
+while getopts "t:d:p" o; do
+	case "${o}" in
+		t)
+			DELAY=true
+			DELAYTIME=${OPTARG}
+			;;
+		d)
+			DIR=${OPTARG}
+			;;
+		*)
+			usage
+			exit 0
+			;;
+		esac
+done
+shift $((OPTIND-1))
+
+usage() { echo "Usage: $0 [-t DELAYTIME sleep before next submit in seconds, disabled by default] [-d DIR ... defaults to PWD] [-p]" 1>&2; exit 1; }
+
+
+for x in $(find wd -mindepth 1 -maxdepth 1 -type d); do
+	if [ $DELAY = true ]; then
+		sleep $DELAYTIME
+	fi
+	echo sbatch sbatch/${SCRIPT} $x
+	if [ $PRINTONLY = false ]; then
+		sbatch sbatch/${SCRIPT} $x
+	fi
+done
+
+#It is possible to create file with individual files
+#find wd -mindepth 1 -maxdepth 1 -type d | awk '$0="sbatch sbatch/06detectRotationCenter_sinogramConsistency_additional.sbatch "$0'>>sbatch/06detectRotationCenter_store.exe
