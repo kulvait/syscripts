@@ -73,7 +73,7 @@ if ARG.count_right is not None:
 if ARG.inverse is not None and colCount != rowCount:
 	raise IOError("To compute inverse rowcount=%d shall be equal to colCount=%d."%(rowCount, colCount))
 
-F = np.zeros(shape=(rowCount, colCount),dtype=np.float32)
+F = np.zeros(shape=(rowCount, colCount), dtype=np.float32)
 
 if ARG.threads == -1:
 	ARG.threads = mp.cpu_count()

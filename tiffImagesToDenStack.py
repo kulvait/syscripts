@@ -25,26 +25,67 @@ parser = argparse.ArgumentParser()
 parser.add_argument('inputTifFiles', nargs='+', type=str)
 parser.add_argument("outputDen")
 parser.add_argument("--force", action="store_true")
-parser.add_argument("--float32", help="Output float32 array regardless dtype of input data.",  action="store_true")
+parser.add_argument("--float32",
+                    help="Output float32 array regardless dtype of input data.",
+                    action="store_true")
 parser.add_argument("--verbose", action="store_true")
-parser.add_argument("--h5file", type=str, help="H5 file to read data for exposure correction and for current correction.")
+parser.add_argument(
+    "--h5file",
+    type=str,
+    help=
+    "H5 file to read data for exposure correction and for current correction.")
 parser.add_argument("--current-correction", action="store_true")
-parser.add_argument("--target-current-value", type=float, help="Current to correct to [default 100mA]", default=100)
-parser.add_argument("--dark-field-correction", type=str, help="Data of the dark field to subtract before current correction", default=None)
+parser.add_argument("--target-current-value",
+                    type=float,
+                    help="Current to correct to [default 100mA]",
+                    default=100)
+parser.add_argument(
+    "--dark-field-correction",
+    type=str,
+    help="Data of the dark field to subtract before current correction",
+    default=None)
 parser.add_argument("--export-info", action="store_true")
-parser.add_argument("--mean-correction", action="store_true", help="Create resulting mean images to be the same")
+parser.add_argument("--mean-correction",
+                    action="store_true",
+                    help="Create resulting mean images to be the same")
 parser.add_argument("--median-correction", action="store_true")
-parser.add_argument("--dark-mad-correction", action="store_true", help="Use 1.67 MAD_frame as minimum admissible value")
-parser.add_argument("--gamma", type=float, help="Decode using given gamma value, try 2.2", default=None)
-parser.add_argument('--minimum-admissible-value', type=float, help="Use this as a minimum admissible value and put values after correction less than this value to this value", default=None)
-parser.add_argument("--dark-frame-inf", type=str, help="Data of the lowest admissible value after dark field correction, data less or equal to dark-frame-inf will be set to dark-frame-inf.", default=None)
+parser.add_argument("--dark-mad-correction",
+                    action="store_true",
+                    help="Use 1.67 MAD_frame as minimum admissible value")
+parser.add_argument("--gamma",
+                    type=float,
+                    help="Decode using given gamma value, try 2.2",
+                    default=None)
+parser.add_argument(
+    '--minimum-admissible-value',
+    type=float,
+    help=
+    "Use this as a minimum admissible value and put values after correction less than this value to this value",
+    default=None)
+parser.add_argument(
+    "--dark-frame-inf",
+    type=str,
+    help=
+    "Data of the lowest admissible value after dark field correction, data less or equal to dark-frame-inf will be set to dark-frame-inf.",
+    default=None)
 
 #ARG = parser.parse_args([])
 ARG = parser.parse_args()
 
 
 #To write dataframe to den
-def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, meanCorrection = False, medianCorrection=False, darkFrame = None, darkFrameInf = None, targetCurrentValue = None, scanData = None, gamma=None, minimumAdmissibleValue=None):
+def writeDenFile(inputTifFiles,
+                 denFile,
+                 force=False,
+                 exportInfo=False,
+                 meanCorrection=False,
+                 medianCorrection=False,
+                 darkFrame=None,
+                 darkFrameInf=None,
+                 targetCurrentValue=None,
+                 scanData=None,
+                 gamma=None,
+                 minimumAdmissibleValue=None):
 	if os.path.exists(denFile):
 		if force:
 			os.remove(denFile)
@@ -59,9 +100,11 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 		outtype = np.dtype("<f4")
 	else:
 		outtype = dtype
-	DEN.writeEmptyDEN(denFile, [dimx, dimy, len(inputTifFiles)], elementtype=outtype, force=True)
+	DEN.writeEmptyDEN(denFile, [dimx, dimy, len(inputTifFiles)],
+	                  elementtype=outtype,
+	                  force=True)
 	if exportInfo:
-		info = np.zeros([3,len(inputTifFiles)], dtype=np.float64)
+		info = np.zeros([3, len(inputTifFiles)], dtype=np.float64)
 		# info[0,:] time in the format usual in synchrotron description in ms
 		# info[1,:] angle in degrees
 		# info[2,:] beam current in mA in the time of acquisition
@@ -69,9 +112,12 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 	#minimumAdmissibleValue = 0.0
 	if minimumAdmissibleValue is not None:
 		if darkFrameInf is not None:
-			darkFrameInf[darkFrameInf < minimumAdmissibleValue] = minimumAdmissibleValue
+			darkFrameInf[
+			    darkFrameInf < minimumAdmissibleValue] = minimumAdmissibleValue
 		else:
-			darkFrameInf = np.array(np.ones((dimy, dimx), dtype=outtype)*minimumAdmissibleValue, dtype=outtype)
+			darkFrameInf = np.array(np.ones(
+			    (dimy, dimx), dtype=outtype) * minimumAdmissibleValue,
+			                        dtype=outtype)
 	mean0 = 0.0
 	for i in range(len(inputTifFiles)):
 		start = timer()
@@ -80,23 +126,33 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 			img = np.array(Image.open(f))
 		fileName = os.path.basename(f)
 		if img.shape[0] != dimy or img.shape[1] != dimx:
-			raise IOError("File %s shape (%d, %d) does not agree with expected (%d, %d) of %s"%(os.path.basename(f), img.shape[0], img.shape[0], dimx, dimy, inputTifFiles[0]))
+			raise IOError(
+			    "File %s shape (%d, %d) does not agree with expected (%d, %d) of %s"
+			    % (os.path.basename(f), img.shape[0], img.shape[0], dimx, dimy,
+			       inputTifFiles[0]))
 		if img.dtype != dtype:
-			raise IOError("File %s dtype %s does not agree with expected %s of file %s"%(os.path.basename(f), img.dtype, dtype, os.path.basename(inputTifFiles[0])))
+			raise IOError(
+			    "File %s dtype %s does not agree with expected %s of file %s" %
+			    (os.path.basename(f), img.dtype, dtype,
+			     os.path.basename(inputTifFiles[0])))
 		if ARG.float32:
 			img = np.float32(img)
 		if exportInfo:
-			info[0, i] = np.float64(scanData[scanData["image_file"]==fileName].index[0])
-			info[1, i] = np.float64(scanData[scanData["image_file"]==fileName]["s_rot"].iloc[0])
-			info[2, i] = np.float64(scanData[scanData["image_file"]==fileName]["current"].iloc[0])
+			info[0, i] = np.float64(
+			    scanData[scanData["image_file"] == fileName].index[0])
+			info[1, i] = np.float64(
+			    scanData[scanData["image_file"] == fileName]["s_rot"].iloc[0])
+			info[2, i] = np.float64(
+			    scanData[scanData["image_file"] == fileName]["current"].iloc[0])
 		if gamma is not None:
 			img = np.power(img, gamma)
 		if darkFrame is not None:
 			img = img - darkFrame
 		if targetCurrentValue is not None:
-		#ARG = parser.parse_args([])
-			frameCurrent = scanData[scanData["image_file"]==fileName]["current"].iloc[0]
-			factor = targetCurrentValue/frameCurrent
+			#ARG = parser.parse_args([])
+			frameCurrent = scanData[scanData["image_file"] ==
+			                        fileName]["current"].iloc[0]
+			factor = targetCurrentValue / frameCurrent
 			img = img * factor
 		if darkFrameInf is not None:
 			img = np.maximum(darkFrameInf, img)
@@ -106,21 +162,23 @@ def writeDenFile(inputTifFiles, denFile, force = False, exportInfo = False, mean
 			if i == 0:
 				mean0 = mean
 			else:
-				img = img * (mean0/mean)
+				img = img * (mean0 / mean)
 				mean = mean0
-				median = median *  (mean0/mean)
+				median = median * (mean0 / mean)
 		if medianCorrection:
 			if i == 0:
 				median0 = median
 			else:
-				img = img * (median0/median)
-				mean = mean * (median0/median)
+				img = img * (median0 / median)
+				mean = mean * (median0 / median)
 				median = median0
 		DEN.writeFrame(denFile, i, img.astype(outtype), force=True)
 		if ARG.verbose:
-			print("Processed %d frame in %0.3fs mean=%f"%(i, timer()-start, mean))
+			print("Processed %d frame in %0.3fs mean=%f" %
+			      (i, timer() - start, mean))
 	if exportInfo:
-		DEN.storeNdarrayAsDEN("%s.info"%(denFile), info, force=force)
+		DEN.storeNdarrayAsDEN("%s.info" % (denFile), info, force=force)
+
 
 if ARG.verbose:
 	print("Start of the script")
@@ -128,8 +186,8 @@ darkFrame = None
 scanData = None
 targetCurrentValue = None
 darkFrameInf = None
-gamma=None
-minimumAdmissibleValue=None
+gamma = None
+minimumAdmissibleValue = None
 if ARG.minimum_admissible_value is not None:
 	minimumAdmissibleVlue = ARG.minimum_admissible_value
 if ARG.gamma is not None:
@@ -146,12 +204,27 @@ if ARG.dark_field_correction is not None:
 		else:
 			minimumAdmissibleValue = max(minimumAdmissibleValue, madValue)
 if ARG.dark_frame_inf is not None:
-	print("Using %s as inf value for correction"%(os.path.basename(ARG.dark_frame_inf)))
+	print("Using %s as inf value for correction" %
+	      (os.path.basename(ARG.dark_frame_inf)))
 	darkFrameInf = DEN.getFrame(ARG.dark_frame_inf, 0)
 if ARG.current_correction:
 	targetCurrentValue = ARG.target_current_value
 	if ARG.h5file is None:
-		print("You have to provice h5file to be albe to perform current correction")
+		print(
+		    "You have to provice h5file to be albe to perform current correction"
+		)
 		sys.exit(-1)
-	print("Will perform current correction to targetValue %f"%(targetCurrentValue))
-writeDenFile(ARG.inputTifFiles, ARG.outputDen, ARG.force, exportInfo = ARG.export_info, meanCorrection = ARG.mean_correction, medianCorrection=ARG.median_correction, darkFrame = darkFrame, targetCurrentValue = targetCurrentValue, scanData = scanData, darkFrameInf = darkFrameInf, gamma=gamma, minimumAdmissibleValue=minimumAdmissibleValue)
+	print("Will perform current correction to targetValue %f" %
+	      (targetCurrentValue))
+writeDenFile(ARG.inputTifFiles,
+             ARG.outputDen,
+             ARG.force,
+             exportInfo=ARG.export_info,
+             meanCorrection=ARG.mean_correction,
+             medianCorrection=ARG.median_correction,
+             darkFrame=darkFrame,
+             targetCurrentValue=targetCurrentValue,
+             scanData=scanData,
+             darkFrameInf=darkFrameInf,
+             gamma=gamma,
+             minimumAdmissibleValue=minimumAdmissibleValue)

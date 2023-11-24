@@ -29,12 +29,17 @@ parser.add_argument('--slab-width', type=int, default=None)
 
 ARG = parser.parse_args([
     "/asap3/petra3/gpfs/p07/2020/data/11009431/processed/bric022_369_a/trans03/",
-    "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.prj50", "--slab-width", "100",
-    "--verbose"#, "--store-sinogram", "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.sin"
-	,"--slab-width", "50"
+    "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.prj50",
+    "--slab-width",
+    "100",
+    "--verbose"  #, "--store-sinogram", "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_trans03.sin"
+    ,
+    "--slab-width",
+    "50"
 ])
 
 ARG = parser.parse_args()
+
 
 #To create dataframe with given columns
 def insertToDf(df, dat, name):
@@ -77,11 +82,12 @@ def writeDenFile(df, inputDir, denFile, force=False):
 		      (i, fileStr, img.shape[0], img.shape[1], denFile))
 		DEN.writeFrame(denFile, i, img, True)
 
+
 def writeSlab(ARG, tifFiles, outputDen, force=None, outputSinogram=None):
 	if force is None:
-		force=False
+		force = False
 	if ARG.verbose:
-		print("Preparing file %s"%outputDen)
+		print("Preparing file %s" % outputDen)
 	tif = TIFF.open(tifFiles[0])
 	sin = tif.read_image()
 	angles_count = sin.shape[0]
@@ -89,9 +95,9 @@ def writeSlab(ARG, tifFiles, outputDen, force=None, outputSinogram=None):
 	row_count = len(tifFiles)
 	if ARG.verbose:
 		print(
-	    "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
-	    % (tifFiles[0], sin.shape[0], sin.shape[1], sin.dtype, sin.min(),
-	       sin.max(), sin.mean()))
+		    "The file %s has dimensions %dx%d and dtype=%s with min=%f, max=%f, mean=%f."
+		    % (tifFiles[0], sin.shape[0], sin.shape[1], sin.dtype, sin.min(),
+		       sin.max(), sin.mean()))
 	sinograms = np.zeros(shape=(0, angles_count, col_count), dtype=np.float32)
 	for i in range(len(tifFiles)):
 		f = tifFiles[i]
@@ -109,17 +115,20 @@ def writeSlab(ARG, tifFiles, outputDen, force=None, outputSinogram=None):
 			print("File %s exist, add --force to overwrite." % outputSinogram)
 		else:
 			DEN.storeNdarrayAsDEN(outputSinogram, sinograms, force)
-	sinograms = np.transpose(sinograms, (1, 0, 2))#Transpose to standard projections
+	sinograms = np.transpose(sinograms,
+	                         (1, 0, 2))  #Transpose to standard projections
 	if ARG.neglog:
 		sinograms = np.log(np.reciprocal(sinograms))
 	DEN.storeNdarrayAsDEN(outputDen, sinograms, force)
 
+
 def slabFileName(origName, fromID, toID):
 	f = origName.rsplit('.', 1)
-	fileName = "%sfrom_%05d_to_%05d"%(f[0], i, i+ARG.slab_width);
+	fileName = "%sfrom_%05d_to_%05d" % (f[0], i, i + ARG.slab_width)
 	if len(f) == 2:
-		fileName = "%s.%s"%(fileName, f[1])
+		fileName = "%s.%s" % (fileName, f[1])
 	return fileName
+
 
 if ARG.verbose:
 	print("Start of the script")
@@ -129,12 +138,13 @@ if ARG.first_index is not None:
 	tifFiles = tifFiles[ARG.first_index:ARG.last_index]
 if ARG.slab_width is not None:
 	for i in range(0, len(tifFiles), ARG.slab_width):
-		fileName = slabFileName(ARG.outputDen, i, i+ARG.slab_width)
+		fileName = slabFileName(ARG.outputDen, i, i + ARG.slab_width)
 		if ARG.store_sinogram is not None:
-			sinogramName = slabFileName(ARG.store_sinogram, i, i + ARG.slab_width)
+			sinogramName = slabFileName(ARG.store_sinogram, i,
+			                            i + ARG.slab_width)
 		else:
 			sinogramName = None
-		writeSlab(ARG, tifFiles[i:i+ARG.slab_width], fileName, ARG.force, sinogramName)
+		writeSlab(ARG, tifFiles[i:i + ARG.slab_width], fileName, ARG.force,
+		          sinogramName)
 else:
 	writeSlab(ARG, tifFiles, ARG.outputDen, ARG.force, ARG.store_sinogram)
-

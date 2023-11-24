@@ -26,12 +26,17 @@ from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
 
 parser = argparse.ArgumentParser()
-parser.add_argument("inputSVD", help="DEN file A to create matrix of scalar products")
-parser.add_argument("inputFlatCoefficients", help="DEN file B to create matrix of scalar products")
-parser.add_argument("predictedFlatField", help="Output DEN with scalar products")
+parser.add_argument("inputSVD",
+                    help="DEN file A to create matrix of scalar products")
+parser.add_argument("inputFlatCoefficients",
+                    help="DEN file B to create matrix of scalar products")
+parser.add_argument("predictedFlatField",
+                    help="Output DEN with scalar products")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--verbose", action="store_true")
-parser.add_argument("--log-file", default=None, help="Output to log file insted of stdout")
+parser.add_argument("--log-file",
+                    default=None,
+                    help="Output to log file insted of stdout")
 ARG = parser.parse_args()
 
 if ARG.log_file:
@@ -40,13 +45,13 @@ if ARG.log_file:
 infV = DEN.readHeader(ARG.inputSVD)
 infM = DEN.readHeader(ARG.inputFlatCoefficients)
 
-if infM["dimcount"] != 2 : 
+if infM["dimcount"] != 2:
 	if infM["dimcount"] != 3 and infM["dimspec"][2] != 1:
-		raise ValueError("infM[\"dimcount\"] = %d "%(infM["dimcount"]))
-
+		raise ValueError("infM[\"dimcount\"] = %d " % (infM["dimcount"]))
 
 if infV["dimcount"] != 3:
-	raise ValueError("infV[\"dimcount\"] = %d but it shall be 3", infV["dimcount"])
+	raise ValueError("infV[\"dimcount\"] = %d but it shall be 3",
+	                 infV["dimcount"])
 
 projCount = infM["dimspec"][0]
 vCount = infV["dimspec"][2]
@@ -55,8 +60,9 @@ dimx = infV["dimspec"][0]
 dimy = infV["dimspec"][1]
 
 if vUsedCount > vCount:
-	raise ValueError("Number of used vectors %d is greater than vectors in SVD %d"%(vUsedCount, vCount))
-
+	raise ValueError(
+	    "Number of used vectors %d is greater than vectors in SVD %d" %
+	    (vUsedCount, vCount))
 
 if vUsedCount < 101:
 	V = np.zeros(shape=(vUsedCount, dimy, dimx), dtype=np.float32)
@@ -65,7 +71,7 @@ if vUsedCount < 101:
 else:
 	V = None
 
-A = DEN.getFrame(ARG.inputFlatCoefficients, 0 )
+A = DEN.getFrame(ARG.inputFlatCoefficients, 0)
 
 dimspec = [dimx, dimy, projCount]
 DEN.writeEmptyDEN(ARG.predictedFlatField, dimspec, force=ARG.force)
