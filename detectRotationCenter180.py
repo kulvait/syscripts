@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """
-Detects rotation center based on input extinction data
+Created 2023
 
 @author: Vojtech Kulvait
-@year: 2023-2024
+
+Tries to detect rotation center based on input extinction data
+
 
 This script processes data to get volume information from the two consequent volumes that goes next to each other
 """
@@ -19,18 +21,13 @@ from denpy import DEN
 from denpy import UTILS
 from denpy import PETRA
 import numpy as np
-import pandas as pd
 import scipy
 from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
-import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
-parser.add_argument("--input-h5", default=None, help="H5 file with dataset information")
-parser.add_argument("--input-tick", default=None, help="Tick file with dataset information, use input-h5 if None.")
-parser.add_argument("--binning-factor", default=None, type=float, help="Binning not considered in pixel shifts.")
-parser.add_argument("--inverted-pixshifts", action="store_true")
+parser.add_argument("inputH5", help="H5 file with dataset information")
 parser.add_argument(
     "--sample-count",
     default=10,
@@ -56,10 +53,10 @@ parser.add_argument("--load-sinograms",
                     help="Load sinograms from DEN file.")
 parser.add_argument(
     "--ord",
-    default=1,
+    default=2,
     type=int,
     help=
-    "Order of norm, see https://numpy.org/doc/stable/reference/generated/numpy.linalg.norm.html. Zero is special value to use Pearson corelation."
+    "Order of norm, see https://numpy.org/doc/stable/reference/generated/numpy.linalg.norm.html."
 )
 parser.add_argument(
     "--sinogram-consistency",
@@ -82,22 +79,16 @@ ARG = parser.parse_args()
 
 if not os.path.isfile(ARG.inputFile):
 	raise IOError("File %s does not exist" % os.path.abspath(ARG.inputFile))
+else:
+	print("START detectRotationCenter.py for extinctions %s and H5 file %s" %
+	      (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.inputH5)))
 
-if ARG.input_tick is None and ARG.input_h5 is None:
-    raise IOError("There is no tick file nor h5 file specified!")
-
-if ARG.input_tick is not None:
-	if not os.path.exists(ARG.input_tick):
-		raise IOError("File %s does not exist" % os.path.abspath(ARG.input_tick))
-	print("START detectRotationCenter.py for extinctions %s and tick file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_tick)))
-
-if ARG.input_h5 is not None:
-	if not os.path.exists(ARG.input_h5):
-		raise IOError("File %s does not exist" % os.path.abspath(ARG.input_h5))
-	print("START detectRotationCenter.py for extinctions %s and H5 file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))
+if not os.path.exists(ARG.inputH5):
+	raise IOError("File %s does not exist" % os.path.abspath(ARG.inputH5))
 
 if ARG.load_sinograms is not None and not os.path.isfile(ARG.load_sinograms):
-	raise IOError("File %s to load sinograms does not exist" % os.path.abspath(ARG.load_sinograms))
+	raise IOError("File %s to load sinograms does not exist" %
+	              os.path.abspath(ARG.load_sinograms))
 
 if ARG.log_file:
 	sys.stdout.flush()
@@ -139,9 +130,9 @@ def getInterpolatedFrame(inputFile, df, angle):
 		df = df.loc[df["s_rot"] == angle]
 		f = DEN.getFrame(ARG.inputFile, df["frame_ind"].iloc[0])
 		f = shiftFrameFloat(f, df["pixel_shift"].iloc[0])
-#		if ARG.verbose:
-#			print("Just shifted frame f by df[pixel_shift].iloc[0]=%f" %
-#			      (df["pixel_shift"].iloc[0]))
+		if ARG.verbose:
+			print("Just shifted frame f by df[pixel_shift].iloc[0]=%f" %
+			      (df["pixel_shift"].iloc[0]))
 		if exactMatches > 1:
 			for k in range(exactMatches - 1):
 				g = DEN.getFrame(ARG.inputFile, df["frame_ind"][k])
@@ -172,14 +163,14 @@ def getInterpolatedFrame(inputFile, df, angle):
 		lofac = (closestHigherAngle - angle) / angleDiff
 		if angleDiff > 1.0:
 			raise Exception(
-			    "Maximal uncoverred rotation angle gap anglediff=%f > 1.0 can not use this method"
-			    % angleDiff)
+			    "For angle=%f maximal uncoverred rotation angle gap anglediff=%f > 1.0 can not use this method"
+			    % (angle, angleDiff))
 			sys.exit()
-#		if ARG.verbose:
-#			print(
-#			    "closestHigherAngle=%f angleDiff=%f closestLowerAngle=%f lofac=%f angle=%f"
-#			    % (closestHigherAngle, angleDiff, closestLowerAngle, lofac,
-#			       angle))
+		if ARG.verbose:
+			print(
+			    "closestHigherAngle=%f angleDiff=%f closestLowerAngle=%f lofac=%f angle=%f"
+			    % (closestHigherAngle, angleDiff, closestLowerAngle, lofac,
+			       angle))
 		f = lofac * lo + (1.0 - lofac) * hi
 	return f
 
@@ -206,27 +197,23 @@ if ARG.angle_count < 1:
 	raise ValueError("Invalid angle_count=%d" % ARG.angle_count)
 
 #Angles to use in calculation
-angleSequence = np.linspace(0, 360, num=ARG.angle_count, endpoint=False)
 sinograms = np.zeros([ARG.sample_count, ARG.angle_count, xdim],
                      dtype=np.float32)
-if ARG.input_tick is not None:
-	dat = DEN.getNumpyArray(ARG.input_tick)
-	data = {"frame_ind":np.arange(zdim), 
-			"s_rot":dat[0],
-			"pixel_shift":dat[1]}
-	df = pd.DataFrame(data)
-else:
-	df = PETRA.imageDataset(ARG.input_h5,
+df = PETRA.imageDataset(ARG.inputH5,
                         includePixelShift=True,
                         overrideMagnification=ARG.override_magnification)
-pixShifts = df["pixel_shift"]
-if ARG.binning_factor is not None:
-    pixShifts = pixShifts/ARG.binning_factor
-if ARG.inverted_pixshifts:
-    pixShifts = -pixShifts
-df["pixel_shift"] = pixShifts
 #Now I estimate low and high limits of the shifts and subtract maximum from each side
-#Maximum is there in order to keep center at the same position but it might induce lot of interpolation
+#Maximum is there in order to keep center at the same position
+pixShifts = df["pixel_shift"]
+minAngle = df["s_rot"].min() 
+df["s_rot"] = df["s_rot"]-minAngle
+minAngle = df["s_rot"].min() 
+maxAngle = df["s_rot"].max()
+print("minAngle=%f maxAngle=%f"%(minAngle, maxAngle))
+if np.abs(maxAngle - 180) < 1.0:
+	angleSequence = np.linspace(minAngle, maxAngle, num=ARG.angle_count, endpoint=False)
+else:
+	raise IOError("maxAngle=%f, which shall be close to 180"%(maxAngle))
 maxshift = pixShifts.max()
 minshift = pixShifts.min()
 ldrop = math.ceil(maxshift)
@@ -247,7 +234,7 @@ if ARG.load_sinograms is not None:
 			print("Setting angle_count to %d from ARG.angle_count %d" %
 			      (info["dimspec"][1], ARG.angle_count))
 		ARG.angle_count = info["dimspec"][1]
-		angleSequence = np.linspace(0, 360, num=ARG.angle_count, endpoint=False)
+		angleSequence = np.linspace(0, 180, num=ARG.angle_count, endpoint=False)
 	sinograms = DEN.getNumpyArray(ARG.load_sinograms)
 else:
 	for angindex in range(len(angleSequence)):
@@ -256,8 +243,7 @@ else:
 		for j in range(len(ySequence)):
 			sinograms[j, angindex] = frame[ySequence[j]]
 	#Already applied on stored sinograms
-	if drop != 0:
-		sinograms = sinograms[:, :, drop:-drop]
+	sinograms = sinograms[:, :, drop:-drop]
 
 if ARG.store_sinograms is not None:
 	DEN.storeNdarrayAsDEN(ARG.store_sinograms, sinograms, force=ARG.force)
@@ -450,22 +436,11 @@ for j in range(len(ySequence)):
 		    0, searchMaxShift + searchInitShift,
 		    searchMaxShift - searchInitShift
 		])
-		if ARG.verbose:
-			print("Searching [%d,%d] maskSize=%d"%(IND[0], IND[-1], maskSize))
-		normedValues = np.zeros(len(IND))
-		x1 = sa[:, maskSize:(MAX - maskSize)]
-		x1 = x1.flatten()
-		for i in range(len(IND)):
-			x2 = np.roll(sb, IND[i], axis=1)[:, maskSize:(MAX - maskSize)]
-			x2 = x2.flatten()#For corrcoef computation
-			if ARG.ord == 0:
-				normedValues[i] = np.corrcoef(x1, x2)[0,1]
-			else:
-				normedValues[i] = np.linalg.norm(x1 + x2, ord=ARG.ord)
-		if ARG.verbose:
-			plt.title("Init estimate Y=%d/%d, j=%d"%(ySequence[j], ydim, j))
-			plt.plot(IND, normedValues)
-			plt.show()
+		normedValues = [
+		    np.linalg.norm(
+		        (sa + np.roll(sb, i, axis=1))[:, maskSize:MAX - maskSize],
+		        ord=1) for i in IND
+		]
 		ARGMIN = np.argmin(normedValues)
 		searchInitShift = IND[ARGMIN]
 		searchMaxShift = 100
@@ -485,17 +460,11 @@ for j in range(len(ySequence)):
 			if 2 * maskSize >= MAX:
 				offsets[j] = np.nan
 				break
-			#Procedure to compute normedValues for given sequence of IND
-			normedValues = np.zeros(len(IND))
-			x1 = sa[:, maskSize:(MAX - maskSize)]
-			x1 = x1.flatten()
-			for i in range(len(IND)):
-				x2 = np.roll(sb, IND[i], axis=1)[:, maskSize:(MAX - maskSize)]
-				x2 = x2.flatten()#For corrcoef computation
-				if ARG.ord == 0:
-					normedValues[i] = np.corrcoef(x1, x2)[0,1]
-				else:
-					normedValues[i] = np.linalg.norm(x1 + x2, ord=ARG.ord)
+			normedValues = [
+			    np.linalg.norm(
+			        (sa + np.roll(sb, i, axis=1))[:, maskSize:MAX - maskSize],
+			        ord=1) for i in IND
+			]
 			ARGMIN = np.argmin(normedValues)
 			convergingSequence.append((ARGMIN, IND[ARGMIN]))
 			#There shall be masked the same proportion of the sinogram to the left and right from searchInitShift to be ballanced
@@ -511,12 +480,8 @@ for j in range(len(ySequence)):
 		else:  #On no break
 			J = IND[ARGMIN]
 			offsets[j] = 0.5 * J
-			print("j=%d y=%d/%d convergingSequence=%s offsets[j]=%f" %
-			      (j, ySequence[j], ydim, convergingSequence, offsets[j]))
-		if ARG.verbose:
-			plt.title("Y=%d/%d, j=%d"%(ySequence[j], ydim, j))
-			plt.plot(IND, normedValues)
-			plt.show()
+			print("j=%d convergingSequence=%s offsets[j]=%d" %
+			      (j, convergingSequence, offsets[j]))
 	else:
 		thetaSum = sinogram.sum(axis=0)
 		thetaSum = thetaSum - thetaSum.mean()
@@ -564,34 +529,30 @@ for j in range(len(ySequence)):
 		else:
 			offsets[j] = centerOffset + 0.5 * J
 			print(
-			    "For j=%d y=%d/%d the center of symmetry offset %.1f or double shift %d corresponds to J=%d  and centerOffset=%.1f"
-			    % (j, ySequence[j], ydim, centerOffset + 0.5 * J,
+			    "For j=%d y=%d the center of symmetry offset %.1f or double shift %d corresponds to J=%d  and centerOffset=%.1f"
+			    % (j, ySequence[j], centerOffset + 0.5 * J,
 			       -J - 2 * centerOffset, J, centerOffset))
-
 offset = np.nanmedian(offsets)
+h5 = h5py.File(ARG.inputH5, 'r')
+if "/entry/hardware/camera1" in h5:
+	cam = "camera1"
+elif "/entry/hardware/camera" in h5:
+	cam = "camera"
+else:
+	raise ValueError(
+	    "There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."
+	    % info["h5"])
+pix_size_cam = float(h5["entry/hardware/%s/pixelsize" % cam][0])
+if ARG.override_magnification is not None:
+	pix_size_mag = ARG.override_magnification
+else:
+	pix_size_mag = float(h5["entry/hardware/%s/magnification" % cam][0])
+pix_size = float(pix_size_cam / pix_size_mag)
 print("rotation_center_offset_pix=%f" % (offset))
-if ARG.input_tick is None:
-	h5 = h5py.File(ARG.input_h5, 'r')
-	if "/entry/hardware/camera1" in h5:
-		cam = "camera1"
-	elif "/entry/hardware/camera" in h5:
-		cam = "camera"
-	else:
-		raise ValueError(
-		    "There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."
-		    % info["h5"])
-	pix_size_cam = float(h5["entry/hardware/%s/pixelsize" % cam][0])
-	if ARG.override_magnification is not None:
-		pix_size_mag = ARG.override_magnification
-	else:
-		pix_size_mag = float(h5["entry/hardware/%s/magnification" % cam][0])
-	pix_size = float(pix_size_cam / pix_size_mag)
-	print("rotation_center_offset=%f" % (offset * pix_size))
+print("rotation_center_offset=%f" % (offset * pix_size))
 if ARG.log_file:
 	sys.stdout.close()
 	sys.stdout = sys.__stdout__
 	os.rename("%s_tmp" % ARG.log_file, ARG.log_file)
-if ARG.input_tick is not None:
-	print("END detectRotationCenter.py for extinctions %s and tick file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_tick)))
-else:
-	print("END detectRotationCenter.py for extinctions %s and H5 file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))
+print("END detectRotationCenter.py for extinctions %s and H5 file %s" %
+      (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.inputH5)))
