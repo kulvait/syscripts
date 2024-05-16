@@ -302,7 +302,7 @@ for j in range(dimz):
 		halfAngleCount = sinogram.shape[0] // 2
 		sa = sinogram
 		sb = -np.flip(sinogram, axis=1)
-		if j != 0:
+		if j != 0 and dimz==3:#Heuristic for Fourier like fit
 			sb = -sb
 		if ARG.antisymmetric:
 			sb = -sb

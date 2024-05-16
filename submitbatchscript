@@ -1,13 +1,14 @@
 #!/bin/bash
-SCRIPT=$1
 DIR=$PWD
 DELAY=false
 PRINTONLY=false
 DELAYTIME=1
+PATTERN=""
 cd $DIR
-echo "Executing script ${SCRIPT} in ${DIR}"
 
-while getopts "t:d:p" o; do
+usage() { echo "Usage: $0 [-t DELAYTIME sleep before next submit in seconds, disabled by default] [-d DIR ... defaults to PWD] [-p pattern]" 1>&2; exit 1; }
+
+while getopts "t:d:p:h" o; do
 	case "${o}" in
 		t)
 			DELAY=true
@@ -15,6 +16,13 @@ while getopts "t:d:p" o; do
 			;;
 		d)
 			DIR=${OPTARG}
+			;;
+		p)
+			PATTERN=${OPTARG}
+			;;
+		h)
+			usage
+			exit 0
 			;;
 		*)
 			usage
@@ -24,10 +32,18 @@ while getopts "t:d:p" o; do
 done
 shift $((OPTIND-1))
 
-usage() { echo "Usage: $0 [-t DELAYTIME sleep before next submit in seconds, disabled by default] [-d DIR ... defaults to PWD] [-p]" 1>&2; exit 1; }
+SCRIPT=$1
+echo "Executing script ${SCRIPT} in ${DIR}"
 
 
-for x in $(find wd -mindepth 1 -maxdepth 1 -type d); do
+
+CMD="find wd -mindepth 1 -maxdepth 1 -type d" 
+if [ -n "$PATTERN" ]; then
+	CMD="$CMD -iregex '.*$PATTERN.*'"
+fi
+
+
+for x in $( eval $CMD ); do
 	if [ $DELAY = true ]; then
 		sleep $DELAYTIME
 	fi

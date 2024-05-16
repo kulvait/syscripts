@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/ usr / bin / env python3
 """
 Created on Fri Feb 11 11:05:28 2022
 
@@ -6,7 +6,7 @@ Created on Fri Feb 11 11:05:28 2022
 """
 
 import astra
-#import mpi#Volume decomposition
+#import mpi #Volume decomposition
 
 import os
 import argparse
@@ -20,36 +20,28 @@ import glob
 import time
 import scipy.io
 
-#folderPrefix = "/home/user/exp/DESY_global"
-#Can be mountpoint on home computer
-inputFolder = "/asap3/petra3/gpfs/p07/2020/data/11009431/processed/bric022_369_a/trans03"
-outputFolder = "/asap3/petra3/gpfs/p07/2020/data/11009431/scratch_cc/VKREC/bric022_369_a_folder"
-inputFolder = "/asap3/petra3/gpfs/p07/2020/data/11009431/processed/bric022_369_a/trans03"
-
-inputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/ivw0032_Referenz_blau_4_000/flat_corrected/rawBin2"
-outputFolder = "/home/kulvaitv/exp/PtNiWire/scratch_cc/kulvait_scratch/ivw0032_Referenz_blau_4_000/astra"
-
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "inputProjections",
     help=
     "Input projection data. In case of file it is assumed to be den file with projections. In case of directory it is assumed to contain tif projections."
 )
+parser.add_argument("--gpu", action="store_true")
 parser.add_argument("--cgls", action="store_true")
 parser.add_argument("--sirt", action="store_true")
 parser.add_argument("--sart", action="store_true")
 parser.add_argument("--em", action="store_true")
 parser.add_argument("--fbp", action="store_true")
 parser.add_argument("--force", action="store_true")
-parser.add_argument("--gpu", action="store_true")
 parser.add_argument("--verbose", action="store_true")
-parser.add_argument("--saveden", action="store_true")
+parser.add_argument("--saveden", default=None, type="str", help="Output den file.")
 parser.add_argument("--savetiff", action="store_true")
 parser.add_argument("--neglog", action="store_true")
 parser.add_argument("--suffix", default="")
 parser.add_argument("--output-folder", default=".")
 parser.add_argument("--store-projections", default=None)
 parser.add_argument("--angles-mat", default=None)
+parser.add_argument("--geom-pm", default=None, help="Read geometry from projection matrix.")
 parser.add_argument(
     "--theta-zero",
     type=float,
@@ -73,17 +65,17 @@ parser.add_argument(
 parser.add_argument("--itterations", type=int, default=100)
 parser.add_argument("--platform-id", type=str, default="0:0")
 #parser.add_argument('--box-sizex',
-#                    help="Bounding box dimension.",
-#                    type=float,
-#                    default=5.0)
+#help = "Bounding box dimension.",
+#type = float,
+#default = 5.0)
 #parser.add_argument('--box-sizey',
-#                    help="Bounding box dimension.",
-#                    type=float,
-#                    default=5.0)
+#help = "Bounding box dimension.",
+#type = float,
+#default = 5.0)
 #parser.add_argument('--box-sizez',
-#                    help="Bounding box dimension.",
-#                    type=float,
-#                    default=5.0)
+#help = "Bounding box dimension.",
+#type = float,
+#default = 5.0)
 parser.add_argument('--voxel-sizex',
                     help="Volume dimension x, defaults to pixel-sizex.",
                     type=float,
@@ -134,10 +126,10 @@ parser.add_argument(
 )
 
 ARG = parser.parse_args()
-#sin=sin[1::2]
-#angles=angles[1::2]
+#sin = sin[1 ::2]
+#angles = angles[1 ::2]
 
-if not (ARG.savetiff or ARG.saveden):
+if not (ARG.savetiff or ARG.saveden is not None):
 	parser.error('Provide either --saveden or --savetiff.')
 
 
@@ -168,7 +160,6 @@ def getFileNum(filePath):
 			return ""
 		else:
 			return "%05d" % int(suf)
-
 
 #Try to get reconlog.txt from tiff file
 def getReconLog(tifFile):
@@ -227,13 +218,13 @@ def writeTiffFiles(volume, tiffFilePattern, force=False):
 
 
 def createProjectorConfig(projectorName, projectionsID, volumeID, usegpu=True):
-	#cfg = {}
+#cfg = {}
 	if usegpu:
 		name = "%s_CUDA" % projectorName
-		#cfg["type"]="%s_CUDA"%projectorName
+#cfg["type"] = "%s_CUDA" % projectorName
 	else:
 		name = projectorName
-		#cfg["type"]=projectorName
+#cfg["type"] = projectorName
 	cfg = astra.astra_dict(name)
 	cfg["ProjectionDataId"] = projectionsID
 	cfg["ReconstructionDataId"] = volumeID
@@ -255,20 +246,20 @@ def generateAstraParallel3d_vec(angles,
 	vectors = np.zeros((len(angles), 12))
 	for i in range(angles_count):
 		theta = angles[i]
-		#From https://www.astra-toolbox.com/docs/geom3d.html
-		#ray direction
+#From https:  // www.astra-toolbox.com/docs/geom3d.html
+#ray direction
 		vectors[i, 0] = np.sin(theta)
 		vectors[i, 1] = -np.cos(theta)
 		vectors[i, 2] = 0.
-		#center of detector
+#center of detector
 		vectors[i, 3] = 0. + np.cos(theta) * offsetvx
 		vectors[i, 4] = 0. + np.sin(theta) * offsetvx
 		vectors[i, 5] = offsetvy
-		# vector from detector pixel (0,0) to (0,1)
+#vector from detector pixel(0, 0) to(0, 1)
 		vectors[i, 6] = np.cos(theta) * det_width
 		vectors[i, 7] = np.sin(theta) * det_width
 		vectors[i, 8] = 0
-		#vector from detector pixel (0,0) to (1,0)
+#vector from detector pixel(0, 0) to(1, 0)
 		vectors[i, 9] = 0
 		vectors[i, 10] = 0
 		if material_ct_convention:
@@ -279,19 +270,20 @@ def generateAstraParallel3d_vec(angles,
 
 
 def transformToExtinction(invertedProjectionIntensities):
-	#DEBUG ... another scaling
-	#invertedProjectionIntensities = invertedProjectionIntensities/invertedProjectionIntensities.max()
-	#END DEBUG
+#DEBUG... another scaling
+#invertedProjectionIntensities = \
+    invertedProjectionIntensities / invertedProjectionIntensities.max()
+#END DEBUG
 	invertedProjectionIntensities = np.log(
 	    np.reciprocal(invertedProjectionIntensities))  #Compute extinction
-	#offset = 1-1/invertedProjectionIntensities.max()
-	#invertedProjectionIntensities = np.log(np.reciprocal(invertedProjectionIntensities)+offset)
+#offset = 1 - 1 / invertedProjectionIntensities.max()
+#invertedProjectionIntensities = \
+    np.log(np.reciprocal(invertedProjectionIntensities) + offset)
 	return (invertedProjectionIntensities)
 
-
-#print("Log file is %s"%(logFile))
+#print("Log file is %s" % (logFile))
 #print(dct)
-#=================INPUT PROJECTION DATA===============
+#== == == == == == == == = INPUT PROJECTION DATA == == == == == == == =
 sec = time.time()
 if os.path.isdir(ARG.inputProjections):
 	pth = os.path.join(ARG.inputProjections, "*.tif")
@@ -348,45 +340,59 @@ if ARG.store_projections is not None:
 	                                   ARG.store_projections),
 	                      np.swapaxes(projectionData, 0, 1),
 	                      force=ARG.force)
-#Now I created structure with projections let's focus on angles
-if ARG.angles_mat is not None:
-	matlab_dic = scipy.io.loadmat(ARG.angles_mat)
-	angles = matlab_dic["angles"]
-else:
-	theta_zero = degToRad(ARG.theta_zero)
-	theta_angular_range = degToRad(ARG.theta_angular_range)
-	angles = np.linspace(theta_zero,
-	                     theta_zero + theta_angular_range,
-	                     num=angles_count,
-	                     endpoint=False)
 
 #Geometry setup
-if len(angles) != angles_count:
-	print("INCOMPATIBLE ANGLES DIMENSIONS!")
-	os.sys.exit(1)
-vectors = generateAstraParallel3d_vec(angles, ARG.pixel_sizex, ARG.pixel_sizey,
-                                      ARG.detector_center_offsetvx,
-                                      ARG.detector_center_offsetvy,
-                                      ARG.material_ct_convention)
+if ARG.geom_pm is not None:
+	pm = DEN.getNumpyArray(ARG.geom_pm)
+	if pm.shape != [angles_count, 2, 4]:
+		print("Projection matrices %s has incompatible shape %s, which shall be [%d, 2, 4]."%(ARG.geom_pm, pm.shape, angles_count))
+		sys.exit(1)
+	vectors = projectionMatricesToAstraParallel2d_vec(pm, ARG.pixel_sizex, ARG.pixel_sizey,
+	                                      ARG.detector_center_offsetvx,
+	                                      ARG.detector_center_offsetvy,
+	                                      ARG.material_ct_convention)
+else:
+	if ARG.angles_mat is not None:
+		matlab_dic = scipy.io.loadmat(ARG.angles_mat)
+		angles = matlab_dic["angles"]
+	else:
+		theta_zero = degToRad(ARG.theta_zero)
+		theta_angular_range = degToRad(ARG.theta_angular_range)
+		angles = np.linspace(theta_zero,
+		                     theta_zero + theta_angular_range,
+		                     num=angles_count,
+		                     endpoint=False)
+	if len(angles) != angles_count:
+		print("INCOMPATIBLE ANGLES DIMENSIONS!")
+		os.sys.exit(1)
+	vectors = generateAstraParallel3d_vec(angles, ARG.pixel_sizex, ARG.pixel_sizey,
+	                                      ARG.detector_center_offsetvx,
+	                                      ARG.detector_center_offsetvy,
+	                                      ARG.material_ct_convention)
 proj_geom = astra.create_proj_geom('parallel3d_vec', row_count, col_count,
                                    vectors)
 #logFile = getReconLog(tifFiles[0])
-#print("Using logFile %s"%(logFile))
+#print("Using logFile %s" % (logFile))
 #dct = parseParamFile(logFile)
 #det_width = float(dct["scan_pixelsize"])
 #det_height = float(dct["scan_pixelsize"])
 
 #The same as the following
-#proj_geom = astra.create_proj_geom('parallel3d', det_width, det_height, row_count, col_count, angles)
+#proj_geom = astra.create_proj_geom('parallel3d', det_width, det_height, \
+				    row_count, col_count, angles)
 #Projections read
-#a matrix: the object is initialized with the contents of this matrix.
-#The matrix must be of size (u,angles,v), where u is the number of columns of the detector and v the number
-#of rows as defined in the projection geometry. It must be of class single, double or logical.
-#2D: (angles,u), where u is the number of detector pixels as defined in the projection geometry
+#a matrix : the object is initialized with the contents of this matrix.
+#The matrix must be of size(u, angles, v), \
+    where u is the number of columns of the detector and v the number
+#of rows as defined in the projection geometry.It must be of class single, \
+    double or logical.
+# 2D : (        \
+    angles, u), \
+    where u is the number of detector pixels as defined in the projection geometry
 #projectionData = np.empty((col_count, angles_count, row_count))
 #Contrary to what doc say it needs to be like this
-#Coordinate order: row (v), angle, column (u)
-#see https://github.com/astra-toolbox/astra-toolbox/blob/master/samples/python/s006_3d_data.py
+#Coordinate order : row(v), angle, column(u)
+#see https:  // github.com/astra-toolbox/astra-toolbox/blob/master/samples/python/s006_3d_data.py
 
 #For 3D geometries there are no explicit projectors
 #The consequence is 3D projectors use only
@@ -401,7 +407,8 @@ if ARG.verbose:
 	    % (ARG.pixel_sizex, ARG.pixel_sizey, len(angles)))
 
 #In 3D
-#astra_create_proj_geom('parallel3d_vec',  det_row_count, det_col_count, vectors);
+#astra_create_proj_geom('parallel3d_vec', det_row_count, det_col_count, \
+			vectors);
 #First try something small although number of detectors is 3927
 vx_count = ARG.volume_sizex
 vy_count = ARG.volume_sizey
@@ -428,7 +435,7 @@ max_y = 0.5 * vy_count * VOXELY
 min_z = -0.5 * ARG.pixel_sizey * vz_count
 max_z = 0.5 * ARG.pixel_sizey * vz_count
 
-#=======================OUTPUT VOLUME=========
+#== == == == == == == == == == == = OUTPUT VOLUME == == == == =
 if not os.path.exists(ARG.output_folder):
 	os.makedirs(ARG.output_folder, exist_ok=True)
 outputName = "reconstructVolumeUsingProjectionsAstra_%s" % ARG.suffix
@@ -440,20 +447,25 @@ if ARG.saveden:
 		os.sys.exit(1)
 vol_geom = astra.create_vol_geom(vy_count, vx_count, vz_count, min_x, max_x,
                                  min_y, max_y, min_z, max_z)
-#To understand this order is useful to go https://www.astra-toolbox.com/apiref/creators.html
-#See https://github.com/astra-toolbox/astra-toolbox/issues/206
-#Basically volumes are defined by (y, x, z) while arrays used for initialization are defined as (z, y, x).
+#To understand this order is useful to go \
+    https:   // www.astra-toolbox.com/apiref/creators.html
+#See https:  // github.com/astra-toolbox/astra-toolbox/issues/206
+#Basically volumes are defined by(                                        \
+    y, x, z) while arrays used for initialization are defined as(z, y, x) \
+    .
 
 vol_id = astra.data3d.create('-vol', vol_geom, 0.0)
 #Following functionality only in unmerged branch
-#https://github.com/astra-toolbox/astra-toolbox/discussions/314
-#https://people.compute.dtu.dk/pcha/HDtomo/SC/Week2Day4.pdf
+#https:	 // github.com/astra-toolbox/astra-toolbox/discussions/314
+#https:	 // people.compute.dtu.dk/pcha/HDtomo/SC/Week2Day4.pdf
 #proj_geom, vol_geom = astra.mpi.create(proj_geom, vol_geom)
 #In 3D
-#vol_geom = astra_create_vol_geom(row_count, col_count, slice_count, min_x, max_x, min_y, max_y, min_z, max_z);
+#vol_geom = astra_create_vol_geom(row_count, col_count, slice_count, min_x, \
+				  max_x, min_y, max_y, min_z, max_z);
 #vol_id = astra_mex_data3d('create', '-vol', vol_geom);
 
-#See https://github.com/astra-toolbox/astra-toolbox.github.io/tree/master/docs/algs for supported algs
+#See https:  // github.com/astra-toolbox/astra-toolbox.github.io/tree/master/docs/algs
+	     // for supported algs
 cfg = {}
 if ARG.cgls:
 	cfg = createProjectorConfig("CGLS3D", sin_id, vol_id, ARG.gpu)

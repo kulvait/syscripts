@@ -70,21 +70,3 @@ else
 	echo "Starting dark field correction wiht DAR=${DARK} FLAT=${FLAT} IMG=${IMG} to produce FLATCOR=${FLATCOR} and IMGCOR=${IMGCOR}"
 	adjustImgValues ${DARK} ${FLAT} ${IMG} ${FLATCOR} ${IMGCOR}
 fi
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

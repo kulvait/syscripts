@@ -27,15 +27,25 @@ import scipy
 from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
+from scipy.signal import convolve2d
+from numpy.fft import fft, ifft
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-log =  logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
-parser.add_argument("--input-h5", default=None, help="H5 file with dataset information")
-parser.add_argument("--input-tick", default=None, help="Tick file with dataset information, use input-h5 if None.")
-parser.add_argument("--binning-factor", default=None, type=float, help="Binning not considered in pixel shifts.")
+parser.add_argument("--input-h5",
+					default=None,
+					help="H5 file with dataset information")
+parser.add_argument(
+	"--input-tick",
+	default=None,
+	help="Tick file with dataset information, use input-h5 if None.")
+parser.add_argument("--binning-factor",
+					default=None,
+					type=float,
+					help="Binning not considered in pixel shifts.")
 parser.add_argument("--inverted-pixshifts", action="store_true")
 parser.add_argument(
 	"--sample-count",
@@ -73,6 +83,22 @@ parser.add_argument(
 	help=
 	"Search for the offcet with maximum consistency so that f(x)-f(x+pi) is optimal."
 )
+
+def floatOneFraction(arg):
+	try:
+		f = float(arg)
+	except ValueError:
+		raise argparse.ArgumentTypeError("Must be a floating point number")
+	if f <= 0.0 or f >= 1.0:
+		raise argparse.ArgumentTypeError("Argument must be in (0, 1)")
+	return f
+
+parser.add_argument(
+	"--search-diameter",
+	type=floatOneFraction,
+	help=
+	"This parameter adjust search for the rotation axis. You can try 0.9 for offcentric images.",
+	default=None)
 parser.add_argument("--max-derivative",
 					action="store_true",
 					help="Search by the algorithm of extreme derivative.")
@@ -87,6 +113,7 @@ parser.add_argument("--log-file",
 					help="Output to log file insted of stdout")
 ARG = parser.parse_args()
 
+
 if not os.path.isfile(ARG.inputFile):
 	raise IOError("File %s does not exist" % os.path.abspath(ARG.inputFile))
 
@@ -95,16 +122,20 @@ if ARG.input_tick is None and ARG.input_h5 is None:
 
 if ARG.input_tick is not None:
 	if not os.path.exists(ARG.input_tick):
-		raise IOError("File %s does not exist" % os.path.abspath(ARG.input_tick))
-	print("START detectRotationCenter.py for extinctions %s and tick file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_tick)))
+		raise IOError("File %s does not exist" %
+					  os.path.abspath(ARG.input_tick))
+	print("START detectRotationCenter.py for extinctions %s and tick file %s" %
+		  (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_tick)))
 
 if ARG.input_h5 is not None:
 	if not os.path.exists(ARG.input_h5):
 		raise IOError("File %s does not exist" % os.path.abspath(ARG.input_h5))
-	print("START detectRotationCenter.py for extinctions %s and H5 file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))
+	print("START detectRotationCenter.py for extinctions %s and H5 file %s" %
+		  (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))
 
 if ARG.load_sinograms is not None and not os.path.isfile(ARG.load_sinograms):
-	raise IOError("File %s to load sinograms does not exist" % os.path.abspath(ARG.load_sinograms))
+	raise IOError("File %s to load sinograms does not exist" %
+				  os.path.abspath(ARG.load_sinograms))
 
 if ARG.log_file:
 	sys.stdout.flush()
@@ -126,9 +157,11 @@ def shiftFrame(x, shiftSize):
 		f[:, shiftSize:] = 0.0
 	return f
 
+
 def reduceFrame(f, intShift, xdim_reduced):
-	offset	= f.shape[1]-xdim_reduced-intShift
-	return f[:,offset:(offset+xdim_reduced)]
+	offset = f.shape[1] - xdim_reduced - intShift
+	return f[:, offset:(offset + xdim_reduced)]
+
 
 #Shift by float shift size
 def shiftAndReduceFrameFloat(f, shiftSize, xdim_reduced):
@@ -142,7 +175,8 @@ def shiftAndReduceFrameFloat(f, shiftSize, xdim_reduced):
 		intShift = int(intShift)
 		f1 = reduceFrame(f, intShift, xdim_reduced)
 		f2 = reduceFrame(f, intShift + 1, xdim_reduced)
-		return (1.0 - floatShift) * f1 + floatShift*f2
+		return (1.0 - floatShift) * f1 + floatShift * f2
+
 
 #Shift by float shift size
 def shiftFrameFloat(f, shiftSize):
@@ -163,7 +197,8 @@ def getInterpolatedFrameNew(inputFile, theta, df, xdim_reduced):
 		if exactMatches > 1:
 			for k in range(1, exactMatches):
 				g = DEN.getFrame(ARG.inputFile, df["frame_ind"][k])
-				g = shiftAndReduceFrameFloat(g, df["pixel_shift"][k], xdim_reduced)
+				g = shiftAndReduceFrameFloat(g, df["pixel_shift"][k],
+											 xdim_reduced)
 				f = f + g
 			f = f / exactMatches
 	else:  #I have to interpolate
@@ -184,9 +219,13 @@ def getInterpolatedFrameNew(inputFile, theta, df, xdim_reduced):
 			closestLowerAngle = df["s_rot"].iloc[closestLowerInd]
 		thetaDiff = closestHigherAngle - closestLowerAngle
 		lo = DEN.getFrame(ARG.inputFile, df["frame_ind"].iloc[closestLowerInd])
-		lo = shiftAndReduceFrameFloat(lo, df["pixel_shift"].iloc[closestLowerInd], xdim_reduced)
+		lo = shiftAndReduceFrameFloat(lo,
+									  df["pixel_shift"].iloc[closestLowerInd],
+									  xdim_reduced)
 		hi = DEN.getFrame(ARG.inputFile, df["frame_ind"].iloc[closestHigherInd])
-		hi = shiftAndReduceFrameFloat(hi, df["pixel_shift"].iloc[closestHigherInd], xdim_reduced)
+		hi = shiftAndReduceFrameFloat(hi,
+									  df["pixel_shift"].iloc[closestHigherInd],
+									  xdim_reduced)
 		lofac = (closestHigherAngle - theta) / thetaDiff
 		if thetaDiff > 1.0:
 			raise Exception(
@@ -201,6 +240,7 @@ def getInterpolatedFrameNew(inputFile, theta, df, xdim_reduced):
 		f = lofac * lo + (1.0 - lofac) * hi
 	return f
 
+
 #There is likely that the dataset does not contain given angle. In that case use interpolation
 #Otherwise use matching frames
 #Return frame with applied shift
@@ -210,9 +250,9 @@ def getInterpolatedFrame(inputFile, df, angle):
 		df = df.loc[df["s_rot"] == angle]
 		f = DEN.getFrame(ARG.inputFile, df["frame_ind"].iloc[0])
 		f = shiftFrameFloat(f, df["pixel_shift"].iloc[0])
-#		if ARG.verbose:
-#			print("Just shifted frame f by df[pixel_shift].iloc[0]=%f" %
-#				  (df["pixel_shift"].iloc[0]))
+		#		if ARG.verbose:
+		#			print("Just shifted frame f by df[pixel_shift].iloc[0]=%f" %
+		#				  (df["pixel_shift"].iloc[0]))
 		if exactMatches > 1:
 			for k in range(1, exactMatches):
 				g = DEN.getFrame(ARG.inputFile, df["frame_ind"][k])
@@ -246,6 +286,8 @@ def getInterpolatedFrame(inputFile, df, angle):
 				"Maximal uncoverred rotation angle gap anglediff=%f > 1.0 can not use this method"
 				% angleDiff)
 			sys.exit()
+
+
 #		if ARG.verbose:
 #			print(
 #				"closestHigherAngle=%f angleDiff=%f closestLowerAngle=%f lofac=%f angle=%f"
@@ -253,7 +295,6 @@ def getInterpolatedFrame(inputFile, df, angle):
 #				   angle))
 		f = lofac * lo + (1.0 - lofac) * hi
 	return f
-
 
 header = DEN.readHeader(ARG.inputFile)
 if len(header["dimspec"]) != 3:
@@ -280,22 +321,24 @@ if ARG.angle_count < 1:
 angleSequence = np.linspace(0, 360, num=ARG.angle_count, endpoint=False)
 if ARG.input_tick is not None:
 	dat = DEN.getNumpyArray(ARG.input_tick)
-	data = {"frame_ind":np.arange(zdim), 
-			"s_rot":dat[0],
-			"pixel_shift":dat[1]}
+	data = {
+		"frame_ind": np.arange(zdim),
+		"s_rot": dat[0],
+		"pixel_shift": dat[1]
+	}
 	df = pd.DataFrame(data)
 else:
 	df = PETRA.imageDataset(ARG.input_h5,
-						includePixelShift=True,
-						overrideMagnification=ARG.override_magnification)
+							includePixelShift=True,
+							overrideMagnification=ARG.override_magnification)
 pixShifts = df["pixel_shift"].copy()
-rangeShifts = df["pixel_shift"].max()-df["pixel_shift"].min()
+rangeShifts = df["pixel_shift"].max() - df["pixel_shift"].min()
 if rangeShifts < 0.1:
 	for i in range(len(pixShifts)):
 		pixShifts.iloc[i] = 0.0
 		#df["pixel_shift"].iloc[i] = 0.0
 if ARG.binning_factor is not None:
-	pixShifts = pixShifts/ARG.binning_factor
+	pixShifts = pixShifts / ARG.binning_factor
 if ARG.inverted_pixshifts:
 	pixShifts = -pixShifts
 df["pixel_shift"] = pixShifts
@@ -317,7 +360,7 @@ if ARG.load_sinograms is not None:
 	sinograms = DEN.getNumpyArray(ARG.load_sinograms)
 elif ARG.center_implementation:
 	sinograms = np.zeros([ARG.sample_count, ARG.angle_count, xdim],
-					 dtype=np.float32)
+						 dtype=np.float32)
 	maxshift = pixShifts.max()
 	minshift = pixShifts.min()
 	ldrop = math.ceil(maxshift)
@@ -342,11 +385,11 @@ else:
 	maxintshift = int(maxshift + 0.99)
 	xdim_reduced = xdim - maxintshift
 	sinograms = np.zeros([ARG.sample_count, ARG.angle_count, xdim_reduced],
-					 dtype=np.float32)
+						 dtype=np.float32)
 	if maxintshift >= xdim:
-		raise ValueError("maxintshift >= xdim %d >=%d"%(maxintshift, xdim))
-	if abs(maxshift-maxintshift) > 0.01 :
-		sinogram_center_offset = 0.5*(maxintshift - maxshift)
+		raise ValueError("maxintshift >= xdim %d >=%d" % (maxintshift, xdim))
+	if abs(maxshift - maxintshift) > 0.01:
+		sinogram_center_offset = 0.5 * (maxintshift - maxshift)
 	if ARG.verbose:
 		print("maxshift=%f, maxintshift=%d, additionalCenterOffset=%f" %
 			  (maxshift, maxintshift, sinogram_center_offset))
@@ -529,15 +572,15 @@ def estimateSmoothFit(sin_orig, shiftEstimate_old=0, iterations=5):
 	xdim = sin.shape[1]
 	ydim = sin.shape[0]
 	sin_mass = sin.sum(axis=1)
-	sin_mass = np.maximum(sin_mass, 1e-10)#Avoid zero division
+	sin_mass = np.maximum(sin_mass, 1e-10)	#Avoid zero division
 	xcoord = 0.5 + np.arange(xdim)
-	angleall = np.linspace(0, 2*np.pi, num=2*ydim, endpoint=False)
+	angleall = np.linspace(0, 2 * np.pi, num=2 * ydim, endpoint=False)
 	angles = angleall[:ydim]
-	N = np.sum(angles < np.pi*0.5)
+	N = np.sum(angles < np.pi * 0.5)
 	smoothfactors = np.arange(10, N, 1)
 	xcoord = 0.5 + np.arange(xdim)
-	coa_first = sin.dot(xcoord)/sin_mass
-	coa_second = sinogram_second.dot(xcoord)/sin_mass
+	coa_first = sin.dot(xcoord) / sin_mass
+	coa_second = sinogram_second.dot(xcoord) / sin_mass
 	coa = np.hstack([coa_first, coa_second])
 	estimates = np.zeros([9, len(smoothfactors)])
 	for i in np.arange(len(smoothfactors)):
@@ -545,18 +588,21 @@ def estimateSmoothFit(sin_orig, shiftEstimate_old=0, iterations=5):
 		coa_firstx = savgol_filter(coa_first, sf, 3)
 		coa_secondx = savgol_filter(coa_second, sf, 3)
 		coa_savgol = savgol_filter(coa, sf, 3)
-		midposition = 0.5*(coa_savgol[ydim-1] + coa_savgol[ydim])
+		midposition = 0.5 * (coa_savgol[ydim - 1] + coa_savgol[ydim])
 		shiftestimate_left = coa_firstx[-1] - midposition
 		shiftestimate_right = midposition - coa_secondx[0]
-		shiftestimate = 0.5*(shiftestimate_left + shiftestimate_right)
-		estimate_error = np.abs(shiftestimate_left) + np.abs(shiftestimate_right)
+		shiftestimate = 0.5 * (shiftestimate_left + shiftestimate_right)
+		estimate_error = np.abs(shiftestimate_left) + np.abs(
+			shiftestimate_right)
 		estimates[0, i] = sf
 		estimates[1, i] = midposition
 		estimates[2, i] = shiftestimate_left
 		estimates[3, i] = shiftestimate_right
 		estimates[4, i] = shiftestimate
 		estimates[5, i] = estimate_error
-		estimates[6, i] = shiftestimate_left*shiftestimate_left + shiftestimate_right*shiftestimate_right
+		estimates[
+			6,
+			i] = shiftestimate_left * shiftestimate_left + shiftestimate_right * shiftestimate_right
 		estimates[7, i] = shiftestimate * shiftestimate
 		estimates[8, i] = np.abs(shiftestimate_left - shiftestimate_right)
 		#if i % 100 == 0:
@@ -577,7 +623,8 @@ def estimateSmoothFit(sin_orig, shiftEstimate_old=0, iterations=5):
 	if iterations == 1:
 		return shiftEstimate
 	else:
-		return estimateSmoothFit(sin_orig, shiftEstimate, iterations-1)
+		return estimateSmoothFit(sin_orig, shiftEstimate, iterations - 1)
+
 
 def estimateTrigonometricFit180(sin_orig, shiftEstimate_old=0, iterations=20):
 	if shiftEstimate_old == 0:
@@ -587,10 +634,10 @@ def estimateTrigonometricFit180(sin_orig, shiftEstimate_old=0, iterations=20):
 	xdim = sin.shape[1]
 	ydim = sin.shape[0]
 	sin_mass = sin.sum(axis=1)
-	sin_mass = np.maximum(sin_mass, 1e-10)#Avoid zero division
+	sin_mass = np.maximum(sin_mass, 1e-10)	#Avoid zero division
 	xcoord = 0.5 + np.arange(xdim)
-	coa = sin.dot(xcoord)/sin_mass
-	angles = np.linspace(0, 2*np.pi, num=2*ydim, endpoint=False)
+	coa = sin.dot(xcoord) / sin_mass
+	angles = np.linspace(0, 2 * np.pi, num=2 * ydim, endpoint=False)
 	angles = angles[:ydim]
 	A = np.zeros([ydim, 3])
 	for i in np.arange(ydim):
@@ -600,9 +647,11 @@ def estimateTrigonometricFit180(sin_orig, shiftEstimate_old=0, iterations=20):
 		A[i, 2] = np.sin(angle)
 	coefs, residuals, RANK, sing = np.linalg.lstsq(A, coa, rcond=None)
 	if math.isnan(coefs[0]) or coefs[0] is None:
-		print("Error in estimateTrigonometricFit when processing sin_orig with shiftEstimate_old=%d iterations=%s coefs=(%s, %s, %s)"%(shiftEstimate_old, iterations, coefs[0], coefs[1], coefs[2]))
+		print(
+			"Error in estimateTrigonometricFit when processing sin_orig with shiftEstimate_old=%d iterations=%s coefs=(%s, %s, %s)"
+			% (shiftEstimate_old, iterations, coefs[0], coefs[1], coefs[2]))
 		return None
-	shiftEstimate= coefs[0] - 0.5*xdim
+	shiftEstimate = coefs[0] - 0.5 * xdim
 	#plt.plot(angles, coa, label="Original")
 	#plt.plot(angles, A.dot(coefs[0]), label="Fitted")
 	#plt.show()
@@ -611,10 +660,12 @@ def estimateTrigonometricFit180(sin_orig, shiftEstimate_old=0, iterations=20):
 		#plt.imshow(sin_orig, cmap="gray",vmin=np.quantile(sin_orig, 0.2), vmax=np.quantile(sin_orig, 0.9))
 		#plt.tight_layout()
 		#plt.title("160 fit")
-		plt.axvline(x=coefs[0], color="green", linewidth=3)
+		#plt.axvline(x=coefs[0], color="green", linewidth=3)
 		return shiftEstimate
 	else:
-		return estimateTrigonometricFit180(sin_orig, shiftEstimate, iterations-1)
+		return estimateTrigonometricFit180(sin_orig, shiftEstimate,
+										   iterations - 1)
+
 
 def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20):
 	if shiftEstimate_old == 0:
@@ -624,10 +675,10 @@ def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20):
 	xdim = sin.shape[1]
 	ydim = sin.shape[0]
 	sin_mass = sin.sum(axis=1)
-	sin_mass = np.maximum(sin_mass, 1e-10)#Avoid zero division
+	sin_mass = np.maximum(sin_mass, 1e-10)	#Avoid zero division
 	xcoord = 0.5 + np.arange(xdim)
-	coa = sin.dot(xcoord)/sin_mass
-	angles = np.linspace(0, 2*np.pi, num=ydim, endpoint=False)
+	coa = sin.dot(xcoord) / sin_mass
+	angles = np.linspace(0, 2 * np.pi, num=ydim, endpoint=False)
 	A = np.zeros([ydim, 3])
 	for i in np.arange(ydim):
 		angle = angles[i]
@@ -636,45 +687,76 @@ def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20):
 		A[i, 2] = np.sin(angle)
 	coefs, residuals, RANK, sing = np.linalg.lstsq(A, coa, rcond=None)
 	if math.isnan(coefs[0]) or coefs[0] is None:
-		print("Error in estimateTrigonometricFit when processing sin_orig with shiftEstimate_old=%d iterations=%s coefs=(%s, %s, %s)"%(shiftEstimate_old, iterations, coefs[0], coefs[1], coefs[2]))
+		print(
+			"Error in estimateTrigonometricFit when processing sin_orig with shiftEstimate_old=%d iterations=%s coefs=(%s, %s, %s)"
+			% (shiftEstimate_old, iterations, coefs[0], coefs[1], coefs[2]))
 		return None
-	shiftEstimate=coefs[0]-0.5*xdim
+	shiftEstimate = coefs[0] - 0.5 * xdim
 	#plt.plot(angles, coa, label="Original")
 	#plt.plot(angles, A.dot(coefs[0]), label="Fitted")
 	#plt.show()
 	#print("iterations=%d coefs=%f, %f, %f xdim*0.5=%f shiftEstimate=%f"%(iterations, coefs[0][0], coefs[0][1], coefs[0][2], 0.5*xdim, shiftEstimate))
 	if iterations == 1:
-		plt.imshow(sin_orig, cmap="gray",vmin=np.quantile(sin_orig, 0.2), vmax=np.quantile(sin_orig, 0.9))
-		plt.tight_layout()
-		plt.title("360 fit x=%f"%(0.5*xdim - shiftEstimate))
-		plt.axvline(x=coefs[0], color="red", linewidth=3)
 		return shiftEstimate
 	else:
-		return estimateTrigonometricFit360(sin_orig, shiftEstimate, iterations-1)
+		return estimateTrigonometricFit360(sin_orig, shiftEstimate,
+										   iterations - 1)
+
 
 offsets = np.zeros(len(ySequence))
-subpixeloffsets = np.zeros(len(ySequence))
 interpoffsets = np.zeros(len(ySequence))
 
 offset_trig180 = np.zeros(len(ySequence))
 offset_smooth180 = np.zeros(len(ySequence))
 offset_trig360 = np.zeros(len(ySequence))
 
-for j in range(len(ySequence)):
+offset_crosscor = np.zeros(len(ySequence))
+peak_sharpness = np.zeros(len(ySequence))
+
+def crossCorelate(sa, sb):
+	prod = fft(sa) * np.conj(fft(sb))
+	return np.sum(ifft(prod), axis=1)
+
+#Start from center to get better first estimates
+jrange = np.fft.fftshift(list(range(len(ySequence))))
+init_offset = None
+init_offset_sharpness = 0.0
+
+for j in jrange:
 	sinogram = sinograms[j]
-	halfAngleCount = sinogram.shape[0] // 2
-	#Subtracting means is not a good operation
-	#sinogram = sinogram - sinogram.mean(axis=1, keepdims=True)
 	MIN = 0
 	MAX = sinogram.shape[1]
+	halfAngleCount = sinogram.shape[0] // 2
+	#First quickly estimate cross corelation
+	sa = sinogram[0:halfAngleCount]
+	sb = -np.flip(sinogram[halfAngleCount:], axis=1)
+	sax = np.pad(sa, ((0,0), (0,MAX-1)))
+	sbx = np.pad(sb, ((0,0), (0,MAX-1)))
+	prod = fft(sax, axis=1) * np.conj(fft(sbx, axis=1))
+	crosscor =np.mean(np.real(ifft(prod)), axis=0)
+	shiftEstimate = np.argmin(crosscor)
+	if shiftEstimate >= MAX:
+		shiftEstimate = shiftEstimate - 2*MAX + 1
+	offset_crosscor[j] = shiftEstimate *0.5
+#	if ARG.verbose:
+#		plt.plot(np.fft.fftshift(np.arange(len(crosscor)))-sinogram.shape[1], crosscor)
+#		plt.show()
+	
+	#Subtracting means is not a good operation
+	#sinogram = sinogram - sinogram.mean(axis=1, keepdims=True)
 	sa = sinogram[0:halfAngleCount]
 	sb = sinogram[halfAngleCount:]
 	offset_trig180_a = estimateTrigonometricFit180(sa)
 	offset_trig180_b = estimateTrigonometricFit180(sb)
-	offset_trig180[j] = 0.5*(offset_trig180_a + offset_trig180_b)
+	offset_trig180[j] = 0.5 * (offset_trig180_a + offset_trig180_b)
 	offset_trig360[j] = estimateTrigonometricFit360(sinogram)
 	offset_smooth180[j] = estimateSmoothFit(sa)
-	print("For j=%d y=%d the center of symmetry offset trig160=%f trig360=%f smooth180=%f"%(j, ySequence[j], offset_trig180[j], offset_trig360[j], offset_smooth180[j])) 
+	if init_offset_sharpness <= 0.0:
+		init_offset = offset_trig360[j]
+#	print(
+#		"For j=%d y=%d the center of symmetry offset trig160=%f trig360=%f smooth180=%f init_offset=%f"
+#		% (j, ySequence[j], offset_trig180[j], offset_trig360[j],
+#		   offset_smooth180[j], init_offset))
 	if ARG.svd:
 		print("SVD j=%d y=%d" % (j, ySequence[j]))
 		offsets[j] = svdAnalyze(sinogram)
@@ -683,125 +765,27 @@ for j in range(len(ySequence)):
 				  (j, ySequence[j], offsets[j]))
 			print("")
 	elif ARG.sinogram_consistency:
-		sa = sinogram[0:halfAngleCount]
-		sb = -np.flip(sinogram[halfAngleCount:], axis=1)
-		#Scan for starting point
-		searchMaxShift = MAX // 3
-		searchInitShift = 0
-		#Implementation with a new seed point
-		#maskParams = COR.computeMaskingParameters(MAX, offset_trig360[j], balanced=False)
-		IND = np.arange(searchInitShift - searchMaxShift,
-						searchInitShift + searchMaxShift + 1, 2)
-		maskSize = np.max([
-		 np.abs(searchInitShift + searchMaxShift),
-		 np.abs(searchInitShift - searchMaxShift)])
-		log.info("searchInitShift=%d searchMaxShift=%s MAX=%s maskSize=%f"%(searchInitShift, searchMaxShift, MAX, maskSize))
+		(ESTIMATE_OFFSET, ESTIMATE_INTERP, convergingSequence, minimizerValue, peakSharpnessGlobal, peakSharpnessLocal) = COR.sinogram_consistency_detection360(sinogram, init_offset, nrmord=0, search_diameter=ARG.search_diameter, balanced=True, verbose=ARG.verbose)
+		offsets[j] = ESTIMATE_OFFSET
+		interpoffsets[j] = ESTIMATE_INTERP
+		peak_sharpness[j] = peakSharpnessGlobal
+		if peak_sharpness[j] > init_offset_sharpness:
+			init_offset_sharpness = peak_sharpness[j]
+			init_offset = ESTIMATE_INTERP
 		if ARG.verbose:
-			print("Searching [%d,%d] maskSize=%d"%(IND[0], IND[-1], maskSize))
-		normedValues = np.zeros(len(IND))
-		x1 = sa[:, maskSize:(MAX - maskSize)]
-		x1 = x1.flatten()
-		for i in range(len(IND)):
-			x2 = np.roll(sb, IND[i], axis=1)[:, maskSize:(MAX - maskSize)]
-			x2 = x2.flatten()#For corrcoef computation
-			if ARG.ord == 0:
-				normedValues[i] = np.corrcoef(x1, x2)[0,1]
-			else:
-				normedValues[i] = np.linalg.norm(x1 + x2, ord=ARG.ord)
-		if ARG.verbose:
-			plt.title("Init estimate Y=%d/%d, j=%d"%(ySequence[j], ydim, j))
-			plt.plot(IND, normedValues)
+			plt.imshow(sinogram,
+					   cmap="gray",
+					   vmin=np.quantile(sinogram, 0.2),
+					   vmax=np.quantile(sinogram, 0.9))
+			plt.tight_layout()
+			plt.title("360 fit x_trg=%f x_fit=%f" %
+					  (0.5 * xdim + offset_trig360[j], 0.5 * xdim + offsets[j]))
+			plt.axvline(x=0.5 * xdim + offset_trig360[j], color="blue", linewidth=3)
+			plt.axvline(x=0.5 * xdim + offsets[j], color="red", linewidth=3)
 			plt.show()
-		ARGMIN = np.argmin(normedValues)
-		searchInitShift = IND[ARGMIN]
-		searchMaxShift = 100
-		ARGMIN = 0
-		IND = [searchInitShift]
-		convergingSequence = []
-		while len(convergingSequence) < 1 or (
-			convergingSequence[-1][0] != searchMaxShift and
-			monotonicityChanges(convergingSequence) < 3):
-			searchInitShift = IND[ARGMIN]
-			IND = np.arange(searchInitShift - searchMaxShift,
-							searchInitShift + searchMaxShift + 1)
-			maskSize = np.max([
-			 np.abs(searchInitShift + searchMaxShift),
-			 np.abs(searchInitShift - searchMaxShift)])
-			maskSize = int(np.floor(maskSize))
-			if 2 * maskSize >= MAX:
-				offsets[j] = np.nan
-				break
-			#Procedure to compute normedValues for given sequence of IND
-			normedValues = np.zeros(len(IND))
-			x1 = sa[:, maskSize:(MAX - maskSize)]
-			x1 = x1.flatten()
-			for i in range(len(IND)):
-				x2 = np.roll(sb, IND[i], axis=1)[:, maskSize:(MAX - maskSize)]
-				x2 = x2.flatten()#For corrcoef computation
-				if ARG.ord == 0:
-					normedValues[i] = np.corrcoef(x1, x2)[0,1]
-				else:
-					normedValues[i] = np.linalg.norm(x1 + x2, ord=ARG.ord)
-			ARGMIN = np.argmin(normedValues)
-			convergingSequence.append((ARGMIN, IND[ARGMIN]))
-		else:  #On no break
-			J = IND[ARGMIN]
-			offsets[j] = 0.5 * J
-		if ARG.verbose:
-			True
-			#plt.title("Y=%d/%d, j=%d"%(ySequence[j], ydim, j))
-			#plt.plot(IND, normedValues)
-			#plt.show()
-		#Try 1D interpolation with splines
-		interpolation = scipy.interpolate.interp1d(IND, normedValues, kind='cubic')
-		
-		#Now subpixel precision
-		searchMaxShift = 1.5
-		searchInitShift = IND[ARGMIN]
-		if IND[0] > searchInitShift - searchMaxShift or IND[-1] < searchInitShift + searchMaxShift:
-			print("Adjust interpolation search from [%f, %f] to [%f, %f]"%(searchInitShift - searchMaxShift, searchInitShift + searchMaxShift, max(IND[0], searchInitShift - searchMaxShift), min(IND[-1], searchInitShift + searchMaxShift)))
-		IND = np.linspace(max(IND[0], searchInitShift - searchMaxShift), min(IND[-1], searchInitShift + searchMaxShift), 101)
-		maskSize = np.max([
-			 np.abs(searchInitShift + searchMaxShift),
-			 np.abs(searchInitShift - searchMaxShift)
-		])
-		splineOrder = 3
-		maskSize = int(np.ceil(maskSize)) + splineOrder + 10
-		if 2 * maskSize >= MAX:
-			offsets[j] = np.nan
-			break
-		if ARG.verbose:
-			print("Searching [%f,%f] maskSize=%d"%(IND[0], IND[-1], maskSize))
-		#Procedure to compute normedValues for given sequence of IND
-		normedValues = np.zeros(len(IND))
-		interpValues = np.zeros(len(IND))
-		x1 = sa[:, maskSize:(MAX - maskSize)]
-		x1 = x1.flatten()
-		for i in range(len(IND)):
-			interpValues[i] = interpolation(IND[i])
-			#x2 = shiftFrameFloat(sb, IND[i])[:, maskSize:(MAX-maskSize)]
-			x2 = scipy.ndimage.shift(sb, (0, IND[i]), order=splineOrder)
-			x2 = x2[:, maskSize:(MAX-maskSize)]
-			x2 = x2.flatten()#For corrcoef computation
-			if ARG.ord == 0:
-				normedValues[i] = np.corrcoef(x1, x2)[0,1]
-			else:
-				normedValues[i] = np.linalg.norm(x1 + x2, ord=ARG.ord)
-		ARGMIN = np.argmin(normedValues)
-		ARGMII = np.argmin(interpValues)
-		J = IND[ARGMIN]
-		subpixeloffsets[j] = 0.5 * J
-		interpoffsets[j] = 0.5 * IND[ARGMII]
-		print("j=%d y=%d/%d convergingSequence=%s offsets[j]=%0.2f subpixeloffsets[j]=%0.2f interpoffset=%0.2f" %
-			  (j, ySequence[j], ydim, convergingSequence, offsets[j], subpixeloffsets[j], 0.5* IND[ARGMII]))
-		#plt.axvline(x=0.5*MAX -  0.5* IND[ARGMII], color="blue", linewidth=3)
-		#plt.show()
-		if ARG.verbose:
-			plt.title("Y=%d/%d, j=%d"%(ySequence[j], ydim, j))
-			plt.plot(IND, normedValues, label="Nonninteger shifts")
-			plt.plot(IND, interpValues, label="Interpolation")
-			plt.legend()
-			plt.show()
+		print(
+			"j=%d y=%d/%d peakSharpness=%0.1f offsets[j]=%0.2f interpoffset=%0.2f"
+			% (j, ySequence[j], ydim, peak_sharpness[j], offsets[j], interpoffsets[j]))
 	else:
 		thetaSum = sinogram.sum(axis=0)
 		thetaSum = thetaSum - thetaSum.mean()
@@ -853,10 +837,18 @@ for j in range(len(ySequence)):
 				% (j, ySequence[j], ydim, centerOffset + 0.5 * J,
 				   -J - 2 * centerOffset, J, centerOffset))
 
-offset = np.nanmedian(offsets)
+admissibleOffsets = (peak_sharpness == 0) | (peak_sharpness > 3.5)
+if sum(admissibleOffsets) != 0:
+	offset = np.nanmedian(offsets[admissibleOffsets])
+	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
+else:
+	offset = np.nanmedian(offsets)
+	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
+	print("WARNING: LOW DETECTION QUALITY OF THE OFFSET, OFFSET MIGHT BE INCORRECT!")
+	
 #Formatting as string shall give the full precision
 print("rotation_center_offset_pix=%s" % (offset))
-print("rotation_center_offset_pix_interp=%s" % (np.nanmedian(interpoffsets)))
+print("rotation_center_offset_pix_interp=%s" % (interpOffset))
 #Create fit
 #First compute pix size
 pix_size = 1.0
@@ -876,47 +868,53 @@ if ARG.input_tick is None:
 	else:
 		pix_size_mag = float(h5["entry/hardware/%s/magnification" % cam][0])
 	pix_size = float(pix_size_cam / pix_size_mag)
-print("default_pix_size=%s"%(pix_size))
+print("default_pix_size=%s" % (pix_size))
 
-
-fittable=np.zeros([len(ySequence),5])
+fittable = np.zeros([0, 5])
 for j in range(len(ySequence)):
-	fittable[j, 0] = ySequence[j]
-	fittable[j, 1] = offsets[j]
-	fittable[j, 2] = (offsets[j]+sinogram_center_offset) * pix_size
-	fittable[j, 3] = interpoffsets[j]
-	fittable[j, 4] = (interpoffsets[j]+sinogram_center_offset) * pix_size
+	fitrow = np.zeros([1, 5])
+	fitrow[0, 0] = ySequence[j]
+	fitrow[0, 1] = offsets[j]
+	fitrow[0, 2] = (offsets[j] + sinogram_center_offset) * pix_size
+	fitrow[0, 3] = interpoffsets[j]
+	fitrow[0, 4] = (interpoffsets[j] + sinogram_center_offset) * pix_size
+	if peak_sharpness[j] == 0 or peak_sharpness[j] > 3.5:
+		fittable = np.vstack([fittable, fitrow])
 stdoffset = offsets.std()
 stdmedian = np.nanmedian(offsets)
-fittable = fittable[np.abs(fittable[:,1]-stdmedian)< 2*stdoffset]
-if fittable.shape[0] > 3:
-	b, a = np.polyfit(fittable[:,0], fittable[:,1], 1)
+fittable = fittable[np.abs(fittable[:, 1] - stdmedian) < 2 * stdoffset]
+if fittable.shape[0] > 1:
+	b, a = np.polyfit(fittable[:, 0], fittable[:, 1], 1)
 	#It is offset = a + b*y
-	print("Fit provides rotation_center_offset_pix=a + by = %f + %f y"%(a, b))
-	print("rotation_center_offset_pix_fit_a=%s"%(a))
-	print("rotation_center_offset_pix_fit_b=%s"%(b))
-	b, a = np.polyfit(fittable[:,0], fittable[:,3], 1)
-	print("rotation_center_offset_pix_interpfit_a=%s"%(a))
-	print("rotation_center_offset_pix_interpfit_b=%s"%(b))
+	print("Fit provides rotation_center_offset_pix=a + by = %f + %f y" % (a, b))
+	print("rotation_center_offset_pix_fit_a=%s" % (a))
+	print("rotation_center_offset_pix_fit_b=%s" % (b))
+	b, a = np.polyfit(fittable[:, 0], fittable[:, 3], 1)
+	print("rotation_center_offset_pix_interpfit_a=%s" % (a))
+	print("rotation_center_offset_pix_interpfit_b=%s" % (b))
 	if pix_size != 0:
-		b, a = np.polyfit(fittable[:,0], fittable[:,2], 1)
-		print("rotation_center_offset_fit_a=%s"%(a))
-		print("rotation_center_offset_fit_b=%s"%(b))
-		b, a = np.polyfit(fittable[:,0], fittable[:,4], 1)
-		print("rotation_center_offset_interpfit_a=%s"%(a))
-		print("rotation_center_offset_interpfit_b=%s"%(b))
+		b, a = np.polyfit(fittable[:, 0], fittable[:, 2], 1)
+		print("rotation_center_offset_fit_a=%s" % (a))
+		print("rotation_center_offset_fit_b=%s" % (b))
+		b, a = np.polyfit(fittable[:, 0], fittable[:, 4], 1)
+		print("rotation_center_offset_interpfit_a=%s" % (a))
+		print("rotation_center_offset_interpfit_b=%s" % (b))
 
 if ARG.load_sinograms is None and not ARG.center_implementation:
 	print("sinogram_center_offset_pix=%f" % (sinogram_center_offset))
 #Offset with respect to the coordinates relative to the center of  [0, N + max_pix_shift-min_pix_shift]
 if ARG.input_tick is None:
-	print("rotation_center_offset=%s" % ((offset+sinogram_center_offset) * pix_size))
-	print("rotation_center_offset_interp=%s" % ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
+	print("rotation_center_offset=%s" %
+		  ((offset + sinogram_center_offset) * pix_size))
+	print("rotation_center_offset_interp=%s" %
+		  ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
 if ARG.log_file:
 	sys.stdout.close()
 	sys.stdout = sys.__stdout__
 	os.rename("%s_tmp" % ARG.log_file, ARG.log_file)
 if ARG.input_tick is not None:
-	print("END detectRotationCenter.py for extinctions %s and tick file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_tick)))
+	print("END detectRotationCenter.py for extinctions %s and tick file %s" %
+		  (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_tick)))
 else:
-	print("END detectRotationCenter.py for extinctions %s and H5 file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))
+	print("END detectRotationCenter.py for extinctions %s and H5 file %s" %
+		  (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))

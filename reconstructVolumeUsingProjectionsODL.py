@@ -261,7 +261,7 @@ def writeDenFile(volume, denFile, force=False):
 	DEN.writeEmptyDEN(denFile, [dimx, dimy, dimz], force=force)
 	for k in range(dimz):
 		#DEN.writeFrame(denFile, k, np.flip(np.transpose(volume[:, :, k]), 0), force=force)
-		DEN.writeFrame(denFile, k, np.transpose(volume[:, :, k]), force=force)
+		DEN.writeFrame(denFile, k, np.transpose(volume[:, :, k]), force=True)
 
 
 def writeDenProjections(com, denFile, force=False):
@@ -454,14 +454,20 @@ reco_space = odl.uniform_discr(min_pt=[min_x, min_y, min_z],
 #=======================OUTPUT VOLUME=========
 if not os.path.exists(ARG.output_folder):
 	os.makedirs(ARG.output_folder, exist_ok=True)
-outputName = "reconstructVolumeUsingProjectionsODL_%s" % (ARG.suffix)
+if ARG.yrange_from is not None:
+	rangeString = "Yfrom%dto%d"%(ARG.yrange_from, ARG.yrange_from + row_count)
+else:
+	rangeString = "fullYdim%d"%(row_count)
+outputName = "reconstructVolumeUsingProjectionsODL_%s" % (rangeString)
+if ARG.suffix != "":
+	outputName = "%s_%s" % (ARG.suffix)
 fullOutputName = os.path.join(ARG.output_folder, outputName)
 if ARG.saveden:
 	outputFileName = "%s.den" % (fullOutputName)
 if ARG.savetiff:
 	outputFileName = "%s.tiff" % (fullOutputName)
 if os.path.exists(outputFileName) and not ARG.force:
-	print("File %s exist, add --force to overwrite." % ARG.outputDEN)
+	print("File %s exist, add --force to overwrite." % fullOutputName)
 	os.sys.exit(1)
 
 #For now do no offsetting when defining geometry
