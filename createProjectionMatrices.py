@@ -167,7 +167,7 @@ if ARG.rotation_center_file is not None:
 print("rotation_center_offset=%f rotation_center_offset_pix=%f"%(rotation_center_offset, rotation_center_offset/pixel_sizex))
 
 totalCenterOffsetx = detector_halflength_adjustment + rotation_center_offset + ARG.detector_center_offsetvx
-totalCenterOffsety = ARG.detector_center_offsetvx
+totalCenterOffsety = ARG.detector_center_offsetvy
 
 print("totalCenterOffsetx=%f rotation_center_offset=%f ARG.detector_center_offsetvx=%f"%(totalCenterOffsetx, rotation_center_offset,  ARG.detector_center_offsetvx))
 
@@ -196,6 +196,7 @@ if ARG.petra_compatibility_transform:
 	directionAngles = [JTransform(x) for x in directionAngles]
 
 if ARG.rotation_center_file_fitted_matrix:
+	#Encode slope information into the projection matrix
 	if rotation_center_offset_interpfit_a is None or rotation_center_offset_interpfit_b is None:
 		print("There is not relevant information about fit.")
 		sys.exit(-1)
@@ -218,6 +219,11 @@ if ARG.rotation_center_file_fitted_matrix:
 	#	print("Shifting detector center by %f including rotation_center_offset=%f and pixel_size_x=%f"%(totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size, rotation_center_offset/default_pixel_size, pixel_sizex))
 		px0 = N * 0.5 - 0.5 - detectorCenter.dot(a)
 		py0 = M * 0.5 - 0.5 - detectorCenter.dot(b)
+		#Alternative way of computing center of the detector, almost the same results maybe more intuitive
+		if totalCenterOffsety == 0: 
+			#print("Creative projection matrices detectorHalflength_adjustment=%f rotation_center_offset=%f detector_center_offsetvx=%f"%(detector_halflength_adjustment, rotation_center_offset, ARG.detector_center_offsetvx))
+			px0 = N * 0.5 - 0.5 - df["pixel_shift"].iloc[i]/ARG.bin_x + totalCenterOffsetx / pixel_sizex
+			py0 = M * 0.5 - 0.5
 		a2 = a.dot(VX)/PX * rotation_center_offset_interpfit_b*ARG.bin_y/PY
 		a = np.array([a[0], a[1], a2], dtype=np.float64)
 		CM = np.array([np.append(a, px0), np.append(b,py0)])
@@ -255,6 +261,12 @@ else:
 	#	print("Shifting detector center by %f including rotation_center_offset=%f and pixel_size_x=%f"%(totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size, rotation_center_offset/default_pixel_size, pixel_sizex))
 		px0 = N * 0.5 - 0.5 - detectorCenter.dot(a)
 		py0 = M * 0.5 - 0.5 - detectorCenter.dot(b)
+#DEBUG CODE
+		px0 = px0 + 0.0
+		#detectorCenter=np.array([0.0,0.0,0.0], dtype=np.float64) + (VX/PX) * (-totalCenterOffsetx ) + (VY/PY) * totalCenterOffsety
+		#px0 = N * 0.5 - 0.5 - detectorCenter.dot(a) + 1.0
+		#py0 = M * 0.5 - 0.5 - detectorCenter.dot(b)
+#END DEBUG CODE
 		CM = np.array([np.append(a, px0), np.append(b,py0)])
 		CM.shape=(1,2,4)
 		CameraMatrices = np.concatenate((CameraMatrices, CM))

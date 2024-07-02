@@ -4,53 +4,118 @@ DELAY=false
 PRINTONLY=false
 DELAYTIME=1
 PATTERN=""
+WD="wd"
+PARTITION="allgpu"
+EXCLUDEWEAKNODES=false
+STRONGNODES=false
+OVERSUBSCRIBE=false
+SLURMARGS=""
 cd $DIR
 
-usage() { echo "Usage: $0 [-t DELAYTIME sleep before next submit in seconds, disabled by default] [-d DIR ... defaults to PWD] [-p pattern]" 1>&2; exit 1; }
 
-while getopts "t:d:p:h" o; do
-	case "${o}" in
-		t)
-			DELAY=true
-			DELAYTIME=${OPTARG}
-			;;
-		d)
-			DIR=${OPTARG}
-			;;
-		p)
-			PATTERN=${OPTARG}
-			;;
-		h)
-			usage
-			exit 0
-			;;
-		*)
-			usage
-			exit 0
-			;;
-		esac
+usage() {
+    echo "Usage: $0 [-a SLURMARGS] [-d DIR ... defaults to PWD] [-f PARTITION ... defaults to allgpu] [-h help] [-o oversubscribe] [-p PATTERN] [-s strong] [-t DELAYTIME sleep before next submit in seconds, disabled by default] [-w workingDir default to wd] [-x exclude weak]" 1>&2
+    exit 1
+}
+
+while getopts "a:d:f:hop:st:w:x" o; do
+    case "${o}" in
+        a)
+            SLURMARGS=${OPTARG}
+            ;;
+        d)
+            DIR=${OPTARG}
+            ;;
+        f)
+            PARTITION=${OPTARG}
+            ;;
+        h)
+            usage
+            exit 0
+            ;;
+        o)
+            OVERSUBSCRIBE=true
+            ;;
+        p)
+            PATTERN=${OPTARG}
+            ;;
+        s)
+            STRONGNODES=true
+            ;;
+        t)
+            DELAY=true
+            DELAYTIME=${OPTARG}
+            ;;
+        w)
+            WD=${OPTARG}
+            ;;
+        x)
+            EXCLUDEWEAKNODES=true
+            ;;
+        *)
+            usage
+            exit 0
+            ;;
+    esac
 done
 shift $((OPTIND-1))
 
+
 SCRIPT=$1
 echo "Executing script ${SCRIPT} in ${DIR}"
+ARG=""
+SCRIPTNAME=$(basename $SCRIPT)
+SCRIPTNAME=${SCRIPTNAME%.*}
 
 
-
-CMD="find wd -mindepth 1 -maxdepth 1 -type d" 
+CMD="find ${WD} -mindepth 1 -maxdepth 1 -type d" 
 if [ -n "$PATTERN" ]; then
 	CMD="$CMD -iregex '.*$PATTERN.*'"
 fi
 
+if [ -f sbatch/${SCRIPT} ]; then
+	SCRIPT=sbatch/${SCRIPT}
+else
+	if [ -f ${SCRIPT} ]; then
+		SCRIPT=${SCRIPT}
+	else
+		echo "Script sbatch/${SCRIPT} or ${SCRIPT} does not exist"
+		exit 1
+	fi
+fi
 
-for x in $( eval $CMD ); do
+
+
+
+if [ $EXCLUDEWEAKNODES = true ]; then
+	WEAKNODES=$(listMaxwellNodes -p ${PARTITION} -w)
+	ARG="$ARG --exclude=$WEAKNODES"
+fi
+
+if [ $STRONGNODES = true ]; then
+	STRONGNODES=$(listMaxwellNodes -p ${PARTITION} -s)
+	ARG="$ARG --nodelist=$STRONGNODES"
+fi
+if [[ $OVERSUBSCRIBE = true ]]; then
+	ARG="$ARG --oversubscribe"
+fi
+if [[ $PARTITION != "allgpu" ]]; then
+	ARG="$ARG --partition=${PARTITION}"
+fi
+
+for WDD in $( eval $CMD ); do
+	JOBNAME="${SCRIPTNAME}_$WDD"
 	if [ $DELAY = true ]; then
 		sleep $DELAYTIME
 	fi
-	echo sbatch sbatch/${SCRIPT} $x
-	if [ $PRINTONLY = false ]; then
-		sbatch sbatch/${SCRIPT} $x
-	fi
+    CMD="sbatch ${ARG} --job-name=${JOBNAME} ${SCRIPT} $WDD"
+    if [ -n "$SLURMARGS" ]; then
+        CMD="$CMD $SLURMARGS"
+    fi
+    echo $CMD
+    if [ $PRINTONLY = false ]; then
+        eval $CMD
+    fi
 done
 
 #It is possible to create file with individual files

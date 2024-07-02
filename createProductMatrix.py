@@ -78,7 +78,7 @@ F = np.zeros(shape=(rowCount, colCount), dtype=np.float32)
 if ARG.threads == -1:
 	ARG.threads = mp.cpu_count()
 	if ARG.verbose:
-		print("Will be computing products of A=%s and B=%s data with ARG.threads=mp.cpu_count()=%d."%(ARG.inputFileA, ARG.inputFileB, ARG.threads))
+		print("Computing products of A=%s and B=%s data with ARG.threads=mp.cpu_count()=%d."%(ARG.inputFileA, ARG.inputFileB, ARG.threads))
 
 #See also https://stackoverflow.com/questions/44763910/multiply-2d-numpy-arrays-element-wise-and-sum
 def tenzorProduct(A_ravel, B_ravel):
@@ -110,7 +110,6 @@ if ARG.threads != 0:
 			for i in range(rowCount):
 				A_matrices[i] = DEN.getFrame(ARG.inputFileA, i).ravel()
 			for j in range(colCount):
-				print("Just processing %010d/%010d files"%(j, colCount))
 				B = DEN.getFrame(ARG.inputFileB, j).ravel()
 				F[:,j] = pool.map(B.dot, A_matrices)
 				#for i in range(rowCount):
@@ -128,7 +127,6 @@ if ARG.threads != 0:
 			for i in range(rowCount):
 				A = DEN.getFrame(ARG.inputFileA, i)
 				A = A.ravel()
-				print("Just read %010d/%010d files"%(i, rowCount))
 				for j in range(colCount):
 					B = DEN.getFrame(ARG.inputFileB, j)
 					H[i, j] = pool.apply_async(tenzorProduct, args=(A, B.ravel()))

@@ -1,0 +1,181 @@
+#!/bin/bash
+#sinfo -p allgpu
+#max-cdcsg001,max-cfelg[007,010-011],max-cmsg[001-011],max-cssbg[001-009,011-014,018-023],max-exflg[025-033,035],max-hzgg[003-006],max-mpag[001-004,008-012],max-p3ag[005,012-015,021-028,034-035],max-uhhg[001-004],max-wng[010-015,017-023,025-036,038-041,043-045,049-060,065-067]
+#max-cfelg[008-009],max-exflg[009-024,034],max-mpag[005-007,013],max-p3ag[006-011,016-020,029-033],max-uhhg[005-013],max-wng[016,024,037,042,046-048]
+#The node quality can be seen at https://confluence.desy.de/display/MXW/Compute+Infrastructure
+WEAKNODES="max-p3ag[005-031],max-wng[004-007],max-exflg[007-024]"
+STRONGNODES="max-hzgg002,max-cdcsg001,max-cssbg[011-023],max-mpag[001-003,008-013],max-uhhg[001-013],max-wng024,max-wng[037-042,052-053,060-062]"
+STRONGNODES="$STRONGNODES,max-m001,max-m002,max-wn[130-137],max-wn[023-164],max-hzgg[005-006]"
+
+ALL=true
+STRONG=false
+WEAK=false
+PARTITION="allgpu"
+IDLEONLY=false
+
+function usage {
+	echo "Usage: $0 [-s] [-w] [-a] [-i] [-p PARTITION] [-h]"
+	echo "	-s		Strong nodes"
+	echo "	-w		Weak nodes"
+	echo "	-a		All nodes"
+	echo "	-i		Idle nodes"
+	echo "	-p PARTITION	Partition to use"
+	echo "	-h		Show this help"
+}
+
+while getopts "swahip:" opt; do
+  case $opt in
+    i)
+		IDLEONLY=true
+      ;;
+	p)
+		PARTITION=$OPTARG
+		;;
+    s)
+	  STRONG=true
+		WEAK=false
+		ALL=false
+      ;;
+    w)
+		WEAK=true
+		STRONG=false
+		ALL=false
+      ;;
+    a)
+		ALL=true
+		WEAK=false
+		STRONG=false
+		;;
+	h)
+		usage
+		exit 0
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG" >&2
+		exit 1
+      ;;
+  esac
+done
+
+
+expand_node_ranges() {
+  local entry="$1"
+  local prefix="${entry%%\[*}"
+  local ranges="${entry#*\[}"
+  ranges="${ranges%\]*}"
+
+  local nodes=()
+  if [[ $entry == *\[* ]]; then
+    IFS=',' read -ra parts <<< "$ranges"
+    for part in "${parts[@]}"; do
+      if [[ $part == *-* ]]; then
+        # Handle range
+        local start="${part%-*}"
+        local end="${part#*-}"
+        start=$((10#${start})) # Convert to decimal to avoid octal interpretation
+        end=$((10#${end}))     # Convert to decimal to avoid octal interpretation
+        for ((i=start; i<=end; i++)); do
+          printf -v node "%s%03d" "$prefix" "$i"
+          nodes+=("$node")
+        done
+      else
+        # Handle single node
+        part=$((10#${part})) # Convert to decimal to avoid octal interpretation
+        printf -v node "%s%03d" "$prefix" "$part"
+        nodes+=("$node")
+      fi
+    done
+  else
+    # Handle single node without ranges
+    nodes+=("$entry")
+  fi
+
+  for node in "${nodes[@]}"; do
+    echo "$node"
+  done
+}
+
+extract_group_prefix() {
+  local entry="$1"
+  
+  if [[ $entry == *\[* ]]; then
+    # Extract prefix part before the '[' character
+    local prefix="${entry%%\[*}"
+  else
+    # Extract prefix part before the first digit sequence
+    local prefix="${entry%%[0-9]*}"
+  fi
+
+  echo "$prefix"
+}
+
+extract_groups() {
+  local input="$1"
+  local elements=()
+  local buffer=""
+  local inside_brackets=0
+
+  for (( i=0; i<${#input}; i++ )); do
+    char="${input:$i:1}"
+    if [[ $char == "[" ]]; then
+      inside_brackets=1
+    elif [[ $char == "]" ]]; then
+      inside_brackets=0
+    elif [[ $char == "," && $inside_brackets -eq 0 ]]; then
+      elements+=("$buffer")
+      buffer=""
+      continue
+    fi
+    buffer+="$char"
+  done
+  elements+=("$buffer")
+
+  for element in "${elements[@]}"; do
+    echo "$element"
+  done
+}
+
+ALLNODES=$(sinfo -p "$PARTITION" | tail -n +2 | awk '{print $6}' | tr '\n' ',' | sed 's/,$//')
+if [[ $IDLEONLY = true ]]; then
+	ALLNODES=$(sinfo -p "$PARTITION" | grep idle | tail -n +2 | awk '{print $6}' | tr '\n' ',' | sed 's/,$//')
+fi
+GROUPLIST=$(extract_groups $ALLNODES)
+
+ALLNODEARRAY=()
+
+for GROUP in $GROUPLIST; do
+	PREFIX=$(extract_group_prefix $GROUP)
+	for N in `expand_node_ranges $GROUP`; do
+		ALLNODEARRAY+=("$N")
+	done
+done
+
+containsElement () {
+  local e match="$1"
+  shift
+  for e; do [[ "$e" == "$match" ]] && return 0; done
+  return 1
+}
+
+if [ "$ALL" = true ]; then
+	NODEARRAY=("${ALLNODEARRAY[@]}")
+else
+
+	if [ "$STRONG" = true ]; then
+		GROUPLIST=$(extract_groups $STRONGNODES)
+	elif [ "$WEAK" = true ]; then
+		GROUPLIST=$(extract_groups $WEAKNODES)
+	fi
+	NODEARRAY=()
+	for GROUP in $GROUPLIST; do
+		PREFIX=$(extract_group_prefix $GROUP)
+		for N in `expand_node_ranges $GROUP`; do
+			if containsElement "$N" "${ALLNODEARRAY[@]}"; then
+				NODEARRAY+=("$N")
+			fi
+		done
+	done
+fi
+
+printf -v NODES '%s,' "${NODEARRAY[@]}"
+echo "${NODES%,}"
