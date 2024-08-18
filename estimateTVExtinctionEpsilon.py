@@ -93,10 +93,3 @@ for k in np.arange(inf_img["dimspec"][2]):
 		#plt.plot(losses)
 	out = b - np.tensordot(xscaled, fitVec, axes=[0,0])
 	DEN.writeFrame(ARG.outputExt, k,  out, force=True)
-
-
-
-
-
-
-

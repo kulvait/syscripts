@@ -21,14 +21,19 @@ from denpy import DEN
 from denpy import UTILS
 from denpy import PETRA
 import numpy as np
+import pandas as pd
 import scipy
 from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
+import scipy.stats as stats
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
 parser.add_argument("--input-h5", default=None, help="H5 file with dataset information")
+parser.add_argument("--fix-corrupted-h5", action="store_true", help="Fix corrupted HDF5 file by scanning for TIFF files and use input linspace instead.")
 parser.add_argument("--input-tick", default=None, help="Tick file with dataset information, use input-h5 if None.")
+parser.add_argument("--input-linspace", action="store_true", help="Use np.linspace(0,180, num, endpoint=False) and zero pixel shifts instead of any specs.")
+parser.add_argument("--crop-percent", default=0.0, type=float, help="Crop procent of the sinogram from the sides.")
 parser.add_argument("--binning-factor", default=None, type=float, help="Binning not considered in pixel shifts.")
 parser.add_argument("--inverted-pixshifts", action="store_true")
 parser.add_argument(
@@ -90,7 +95,7 @@ if ARG.fourier:
 if not os.path.isfile(ARG.inputFile):
 	raise IOError("File %s does not exist" % os.path.abspath(ARG.inputFile))
 
-if ARG.input_tick is None and ARG.input_h5 is None:
+if ARG.input_tick is None and ARG.input_h5 is None and ARG.input_linspace is False:
 	raise IOError("There is no tick file nor h5 file specified!")
 
 if ARG.input_tick is not None:
@@ -278,8 +283,23 @@ if ARG.input_tick is not None:
 			"s_rot":dat[0],
 			"pixel_shift":dat[1]}
 	df = pd.DataFrame(data)
-else:
-	df = PETRA.imageDataset(ARG.input_h5, includePixelShift=True, overrideMagnification=ARG.override_magnification)
+elif ARG.input_h5 is not None:
+	try:
+		df = PETRA.imageDataset(ARG.input_h5, includePixelShift=True, overrideMagnification=ARG.override_magnification)
+	except Exception as e:
+		if ARG.fix_corrupted_h5:
+			print("Error in reading H5 file %s, trying to fix it."%(ARG.input_h5))
+			data = {"frame_ind":np.arange(zdim),
+					"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),
+					"pixel_shift":np.zeros(zdim)}
+			df = pd.DataFrame(data)
+		else:
+			raise e
+elif ARG.input_linspace:
+	data = {"frame_ind":np.arange(zdim),
+			"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),
+			"pixel_shift":np.zeros(zdim)}
+	df = pd.DataFrame(data)
 
 pixShifts = df["pixel_shift"].copy()
 rangeShifts = df["pixel_shift"].max()-df["pixel_shift"].min()
@@ -680,7 +700,10 @@ def estimateSmoothFit(sin_orig, shiftEstimate_old=0, iterations=5):
 		return estimateSmoothFit(sin_orig, shiftEstimate, iterations-1)
 
 
-
+def calculate_entropy(sinogram):
+	flattened_sinogram = sinogram.flatten()
+	entropy = stats.entropy(np.histogram(flattened_sinogram, bins=256, density=True)[0])
+	return entropy
 
 offsets = np.zeros(len(ySequence))
 offset_trig = np.zeros(len(ySequence))
@@ -694,18 +717,26 @@ for j in range(len(ySequence)):
 	#Subtracting means is not a good operation
 	#sinogram = sinogram - sinogram.mean(axis=1, keepdims=True)
 	MIN = 0
-	MAX = sinogram.shape[1]
+	width = sinogram.shape[1]
+	if ARG.crop_percent is not None and ARG.crop_percent > 0:
+		crop = int(width * ARG.crop_percent / 100)
+		crop_side = crop // 2
+		if width - 2 * crop_side < 2:
+			raise ValueError("Too much crop, consider value less than 50%, width=%d crop=%d" % (width, crop))
+		sinogram = sinogram[:, crop_side:width - crop_side]
+		width = sinogram.shape[1]
+	entropy = calculate_entropy(sinogram)
 	offset_trig[j] = estimateTrigonometricFit(sinogram)
 	offset_smooth[j] = estimateSmoothFit(sinogram)
 	if ARG.fourier:
-		HALF = 0.5*MAX
+		COD = 0.5*width - 0.5
 		cor = calculation.find_center_vo(sinogram, radius=5, step=0.1)
-		offsets[j] = cor - HALF
+		offsets[j] = cor - COD
 		cor = calculation.find_center_vo(sinogram, radius=5, step=0.1, start=0.2*sinogramPixels, stop=0.8*sinogramPixels)
-		subpixeloffsets[j] = cor - HALF
+		subpixeloffsets[j] = cor - COD
 		cor = calculation.find_center_vo(sinogram, radius=5, step=0.01)
-		interpoffsets[j] = cor - HALF
-		print("j=%d y=%d/%d offsets_default[j]=%0.2f offsets_broad[j]=%0.2f offsets_interp[j]=%0.2f offset_trig[j]=%0.2f offsets_smooth[j]=%0.2f" % (j, ySequence[j], ydim, offsets[j], subpixeloffsets[j], interpoffsets[j], offset_trig[j], offset_smooth[j]))
+		interpoffsets[j] = cor - COD
+		print("j=%d y=%d/%d offsets_default[j]=%0.2f offsets_broad[j]=%0.2f offsets_interp[j]=%0.2f offset_trig[j]=%0.2f offsets_smooth[j]=%0.2f, entropy=%0.2f" % (j, ySequence[j], ydim, offsets[j], subpixeloffsets[j], interpoffsets[j], offset_trig[j], offset_smooth[j], entropy))
 	elif ARG.svd:
 		print("SVD j=%d y=%d" % (j, ySequence[j]))
 		offsets[j] = svdAnalyze(sinogram)
@@ -718,7 +749,7 @@ for j in range(len(ySequence)):
 		sa = sinogram[0:halfAngleCount]
 		sb = -np.flip(sinogram[halfAngleCount:], axis=1)
 		#Scan for starting point
-		searchMaxShift = MAX // 3
+		searchMaxShift = width // 3
 		searchInitShift = 0
 		IND = np.arange(searchInitShift - searchMaxShift,
 						searchInitShift + searchMaxShift + 1, 10)
@@ -728,7 +759,7 @@ for j in range(len(ySequence)):
 		])
 		normedValues = [
 			np.linalg.norm(
-				(sa + np.roll(sb, i, axis=1))[:, maskSize:MAX - maskSize],
+				(sa + np.roll(sb, i, axis=1))[:, maskSize:width - maskSize],
 				ord=1) for i in IND
 		]
 		ARGMIN = np.argmin(normedValues)
@@ -747,12 +778,12 @@ for j in range(len(ySequence)):
 				0, searchMaxShift + searchInitShift,
 				searchMaxShift - searchInitShift
 			])
-			if 2 * maskSize >= MAX:
+			if 2 * maskSize >= width:
 				offsets[j] = np.nan
 				break
 			normedValues = [
 				np.linalg.norm(
-					(sa + np.roll(sb, i, axis=1))[:, maskSize:MAX - maskSize],
+					(sa + np.roll(sb, i, axis=1))[:, maskSize:width - maskSize],
 					ord=1) for i in IND
 			]
 			ARGMIN = np.argmin(normedValues)
@@ -854,18 +885,29 @@ for j in range(len(ySequence)):
 	fittable[j, 2] = (offsets[j]+sinogram_center_offset) * pix_size
 	fittable[j, 3] = interpoffsets[j]
 	fittable[j, 4] = (interpoffsets[j]+sinogram_center_offset) * pix_size
-stdoffset = offsets.std()
-stdmedian = np.nanmedian(offsets)
-fittable = fittable[np.abs(fittable[:,1]-stdmedian)< 2*stdoffset]
+#Remove outliers
+stdoffset = interpoffsets.std()
+stdmedian = np.nanmedian(interpoffsets)
+fittable = fittable[np.abs(fittable[:,3]-stdmedian)< 2*stdoffset]
+
+num_outliers_rejected = len(ySequence) - len(fittable)
+
 if fittable.shape[0] > 3:
 	b, a = np.polyfit(fittable[:,0], fittable[:,1], 1)
 	#It is offset = a + b*y
-	print("Fit provides rotation_center_offset_pix=a + by = %f + %f y"%(a, b))
 	print("rotation_center_offset_pix_fit_a=%s"%(a))
 	print("rotation_center_offset_pix_fit_b=%s"%(b))
+	#Fit of interpoffsets
 	b, a = np.polyfit(fittable[:,0], fittable[:,3], 1)
+	predicted_offsets = a + b*fittable[:,0]
+	#Compute MAE and R-squared error
+	mae = np.mean(np.abs(fittable[:,3]-predicted_offsets))
+	ss_res = np.sum((fittable[:,3]-predicted_offsets)**2)
+	ss_tot = np.sum((fittable[:,3]-np.mean(fittable[:,3]))**2)
+	r2 = 1 - ss_res/ss_tot
 	print("rotation_center_offset_pix_interpfit_a=%s"%(a))
 	print("rotation_center_offset_pix_interpfit_b=%s"%(b))
+	print("Fit provides rotation_center_offset_pix=a + by = %f + %f y"%(a, b))
 	if pix_size != 0:
 		b, a = np.polyfit(fittable[:,0], fittable[:,2], 1)
 		print("rotation_center_offset_fit_a=%s"%(a))
@@ -873,6 +915,10 @@ if fittable.shape[0] > 3:
 		b, a = np.polyfit(fittable[:,0], fittable[:,4], 1)
 		print("rotation_center_offset_interpfit_a=%s"%(a))
 		print("rotation_center_offset_interpfit_b=%s"%(b))
+	print("rotation_center_offset_pix_interp_mae=%s"%(mae))
+	print("rotation_center_offset_pix_interp_r2=%s"%(r2))
+print("Out %d measurements %d were rejected as outliers"%(len(ySequence), num_outliers_rejected))
+print("Included offsets are %s"%(", ".join(["%0.2f"%x for x in fittable[:,3]])))
 
 if ARG.log_file:
 	sys.stdout.close()
@@ -880,6 +926,8 @@ if ARG.log_file:
 	os.rename("%s_tmp" % ARG.log_file, ARG.log_file)
 if ARG.input_tick is not None:
 	print("END detectRotationCenter180.py for extinctions %s and tick file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_tick)))
-else:
+elif ARG.input_h5 is not None:
 	print("END detectRotationCenter180.py for extinctions %s and H5 file %s" % (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))
+elif ARG.input_linspace:
+	print("END detectRotationCenter180.py for extinctions %s and linspace" % (os.path.abspath(ARG.inputFile)))
 

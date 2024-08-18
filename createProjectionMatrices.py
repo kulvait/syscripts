@@ -21,6 +21,7 @@ from denpy import DEN
 from denpy import UTILS
 from denpy import PETRA
 import numpy as np
+import pandas as pd
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputH5", help="H5 file with dataset information")
@@ -50,6 +51,7 @@ parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--petra-compatibility-transform", action="store_true", help="Make geometry compatible with that used by JM in his reconstruction scripts")
 parser.add_argument("--log-file", default=None, help="Output to log file insted of stdout")
 parser.add_argument("--override-magnification", default=None)
+parser.add_argument("--fix-corrupted-h5", action="store_true", help="Fix corrupted HDF5 file by scanning for TIFF files, provide --input-file.")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--write-params-file", action="store_true")
 parser.add_argument('--_json-message', default="Created using KCT script createCameraMatricesForCircularScanTrajectoryParallelRay3D.py", help=argparse.SUPPRESS)
@@ -58,10 +60,31 @@ ARG = parser.parse_args()
 if ARG.log_file:
 	sys.stdout = open(ARG.log_file, "wt")
 
-if ARG.override_magnification is not None:
-	df = PETRA.imageDataset(ARG.inputH5, includePixelShift=True, overrideMagnification=float(ARG.override_magnification))
-else:
-	df = PETRA.imageDataset(ARG.inputH5, includePixelShift=True)
+if ARG.fix_corrupted_h5:
+	if ARG.input_file is not None:
+		header = DEN.readHeader(ARG.input_file)
+		if len(header["dimspec"]) != 3:
+			raise TypeError("Dimension of dimspec for file %s shall be 3 but is %d!"%(arg.input_file, len(header["dimspec"])))
+		dimspec = header["dimspec"]
+		detector_sizex = np.uint32(dimspec[0])
+		detector_sizey = np.uint32(dimspec[1])
+		zdim = np.uint32(dimspec[2])
+	else:
+		raise ValueError("Input file must be specified to fix corrupted h5 file.")
+
+try:
+	if ARG.override_magnification is not None:
+		df = PETRA.imageDataset(ARG.inputH5, includePixelShift=True, overrideMagnification=float(ARG.override_magnification))
+	else:
+		df = PETRA.imageDataset(ARG.inputH5, includePixelShift=True)
+except Exception as e:
+	print(colored("Error: %s"%e, "red"))
+	if ARG.fix_corrupted_h5:
+		print("Corrupted h5 file fix by np.linspace.")
+		data = {"frame_ind":np.arange(zdim),"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),"pixel_shift":np.zeros(zdim)}
+		df = pd.DataFrame(data)
+	else:
+		sys.exit(1)
 
 h5 = h5py.File(ARG.inputH5, 'r')
 

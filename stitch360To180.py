@@ -20,7 +20,7 @@ import re
 from denpy import DEN
 from denpy import UTILS
 from denpy import PETRA
-from algotom.prep.conversion import convert_sinogram_360_to_180
+from algotom.prep.conversion import convert_sinogram_360_to_180_enh
 import numpy as np
 import multiprocessing as mp
 
@@ -67,6 +67,7 @@ parser.add_argument("--log-file", default=None, help="Output to log file insted 
 parser.add_argument("--override-magnification", default=None)
 parser.add_argument("--normalize", action="store_true", help="Use normalize=True in convert_sinogram_360_to_180 function.")
 parser.add_argument("--force", action="store_true")
+parser.add_argument("--suggested-sinogram-width", default=None, type=str, help="Params file with stitched_sinogram_width=..., if not specified, it is computed from the input sinogram.")
 parser.add_argument("--write-params-file", action="store_true")
 parser.add_argument('--_json-message', default="Created using KCT script createCameraMatricesForCircularScanTrajectoryParallelRay3D.py", help=argparse.SUPPRESS)
 parser.add_argument("--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]")
@@ -228,9 +229,9 @@ if dimx != detector_sizex:
 	raise ValueError("X dimension of the input sinogram %s %d does not match the dimension of the detector %d!"%(ARG.inputSIN, dimx, detector_sizex))
 
 
-#Create sequence of CPX[y] to represent the center of rotation position in pixels for each y
-CPX = np.zeros(dimy, dtype=np.float32)
-NPX = np.zeros(dimy, dtype=np.float32)
+#Create sequence of center_of_rotation_before_stitiching[y] to represent the center of rotation position in pixels for each y
+center_of_rotation_before_stitiching = np.zeros(dimy, dtype=np.float32)
+center_of_rotation_after_stitching = np.zeros(dimy, dtype=np.float32)
 
 for k in range(dimy):
 	CODPIX = (detector_sizex-1)*0.5
@@ -239,22 +240,39 @@ for k in range(dimy):
 	else:
 		COROFFSET = detector_halflength_adjustment + ARG.detector_center_offsetvx + rotation_center_offset
 	COROFFSETPIX = COROFFSET / pixel_sizex
-	CPX[k] = CODPIX + COROFFSETPIX
+	center_of_rotation_before_stitiching[k] = CODPIX + COROFFSETPIX
 
-def estimateStitchedSinogramWidth(dimx_orig, CPX):
+def estimateStitchedSinogramWidth(dimx_orig, center_of_rotation_before_stitiching):
 	maxWidth = dimx_orig
+	minWidth = dimx_orig*2
 	CODPIX = (dimx_orig-1)*0.5
-	for k in range(len(CPX)):
+	for k in range(len(center_of_rotation_before_stitiching)):
 		#Compute algotom final size of the sinogram
-		COR = CPX[0]
+		COR = center_of_rotation_before_stitiching[0]
 		overlap = min(2*COR + 1, 2 * (dimx_orig - COR) - 1)
-		outWidth = 2 * dimx_orig - np.floor(overlap)
+		if overlap - np.floor(overlap) > 0.5:
+			outWidth = 2 * dimx_orig - np.floor(overlap) - 1
+		else:
+			outWidth = 2 * dimx_orig - np.floor(overlap)
 		if outWidth > maxWidth:
 			maxWidth = outWidth
-	return maxWidth
+		if outWidth < minWidth:
+			minWidth = outWidth
+	return (minWidth, maxWidth)
 
-dimx_stitched = estimateStitchedSinogramWidth(dimx, CPX)
-print("Based on the center of rotation and original size dimx=%d the estimate for dimx_stitched=%d"%(dimx, dimx_stitched))
+dimx_stitched = estimateStitchedSinogramWidth(dimx, center_of_rotation_before_stitiching)
+if ARG.suggested_sinogram_width is not None:
+	with open(ARG.suggested_sinogram_width, 'r') as f:
+		for x in f.readlines():
+			if re.search("^stitched_sinogram_width=", x):
+				dimx_stitched = int(x.rsplit("=",1)[1])
+				break
+	print("Based on params file for given dimx=%d  dimx_stitched=%d"%(dimx, dimx_stitched))
+else:
+	if dimx_stitched[0] != dimx_stitched[1]:
+		print(colored("Based on the center of rotation and original size dimx=%d the estimate for dimx_stitched=%d-%d, taking minimum"%(dimx, dimx_stitched[0], dimx_stitched[1]), "red"))
+	dimx_stitched = dimx_stitched[0]
+	print("Based on the center of rotation and original size dimx=%d the estimate for dimx_stitched=%d"%(dimx, dimx_stitched))
 angleCountStitched = angleCount // 2 + 1
 angleCountCorrected = int(sum(directionAngles<np.pi))
 
@@ -275,17 +293,17 @@ else:
 
 DEN.writeEmptyDEN(ARG.outputSIN, [dimx_stitched, angleCountCorrected, dimy], force=ARG.force)
 
-#Mechanism to write to NPX and not its copy in individual threads
+#Mechanism to write to center_of_rotation_after_stitching and not its copy in individual threads
 def insert_npx_value(x):
 	(k, v) = x
-	NPX[k] = v
+	center_of_rotation_after_stitching[k] = v
 
-def process_frame(k, inputFile, outputFile, CPX, NPX, dimx_stitched, dimang_correct, verbose=False, normalize=False):
-	if verbose:
-		print("proces_frame(k=%d, inputFile=%s, outputFile=%s, CPX, NPX, dimx_stitched=%d, dimang_correct=%d, verbose=%s, normalize=%s)"%(k, inputFile, outputFile, dimx_stitched, dimang_correct, verbose, normalize))
+def process_frame(k, inputFile, outputFile, center_of_rotation_before_stitiching, center_of_rotation_after_stitching, dimx_stitched, dimang_correct, verbose=False, normalize=False):
+	if verbose and k % 100 == 0:
+		print("proces_frame(k=%d, inputFile=%s, outputFile=%s, center_of_rotation_before_stitiching, center_of_rotation_after_stitching, dimx_stitched=%d, dimang_correct=%d, verbose=%s, normalize=%s)"%(k, inputFile, outputFile, dimx_stitched, dimang_correct, verbose, normalize))
 	sin = DEN.getFrame(inputFile, k)
 	(dimy_sin, dimx_sin) = sin.shape
-	CORPIX = CPX[k]
+	CORPIX = center_of_rotation_before_stitiching[k]
 	#Apply sigmoid weigting to sin
 	weight = np.ones(dimx_sin)
 	dimy_stitch = dimy_sin // 2 + 1
@@ -301,21 +319,25 @@ def process_frame(k, inputFile, outputFile, CPX, NPX, dimx_stitched, dimang_corr
 		for i in range(minindex, dimx_sin):
 			weight[i] = scaled_sigmoid((CORPIX-i)/radius)
 	sin = sin * weight #This works https://stackoverflow.com/questions/22934219/numpy-multiply-arrays-rowwise/78682115#78682115
-	#Now I want to stop algothom from any weighting attempts
-	w = np.ones((dimy_stitch, dimx_sin))
-	(stsin, NEWCORPIX) = convert_sinogram_360_to_180(sin, CORPIX, total_width=dimx_stitched, norm=normalize, wei_mat1 = w, wei_mat2 = w)
+#START DEBUG
+#	sin[:dimang_correct, :] = 0.0
+#END DEBUG
+	#I want to stop algothom from any weighting attempts
+	#w = np.ones((dimy_stitch, dimx_sin))
+	#(stsin, NEWCORPIX) = convert_sinogram_360_to_180(sin, CORPIX, total_width=dimx_stitched, norm=normalize, wei_mat1 = w, wei_mat2 = w)
+	(stsin, NEWCORPIX) = convert_sinogram_360_to_180_enh(sin, CORPIX, total_width=dimx_stitched, norm=normalize, noweighting=True)
 	stsin = stsin[:dimang_correct]
 	DEN.writeFrame(outputFile, k, stsin, force=True)
-	if verbose:
-		print("Processed frame %d NPX=%f"%(k, NEWCORPIX))
+	if verbose and k % 100 == 0:
+		print("Processed frame %d center_of_rotation_after_stitching=%f"%(k, NEWCORPIX))
 	return (k, NEWCORPIX)
 
 pool = mp.Pool(processes=ARG.threads)
 
-process_frame(0, ARG.inputSIN, ARG.outputSIN, CPX, NPX, dimx_stitched, angleCountCorrected, ARG.verbose, ARG.normalize)
-
+#process_frame(0, ARG.inputSIN, ARG.outputSIN, center_of_rotation_before_stitiching, center_of_rotation_after_stitching, dimx_stitched, angleCountCorrected, ARG.verbose, ARG.normalize)
+#exit(0)
 for k in range(dimy):
-	pool.apply_async(process_frame, args=(k, ARG.inputSIN, ARG.outputSIN, CPX, NPX, dimx_stitched, angleCountCorrected, ARG.verbose, ARG.normalize), callback=insert_npx_value)
+	pool.apply_async(process_frame, args=(k, ARG.inputSIN, ARG.outputSIN, center_of_rotation_before_stitiching, center_of_rotation_after_stitching, dimx_stitched, angleCountCorrected, ARG.verbose, ARG.normalize), callback=insert_npx_value)
 
 pool.close()
 pool.join()
@@ -323,10 +345,10 @@ pool.join()
 if ARG.verbose:
 	print("All frames stitched")
 
-#Test if all elements in NPX are the same
-if not np.all(NPX == NPX[0]):
-	print(colored("All elements in NPX are not the same, this is suspicious!", "red"))
-	raise ValueError("All elements in NPX are not the same!")
+#Test if all elements in center_of_rotation_after_stitching are the same
+if not np.all(center_of_rotation_after_stitching == center_of_rotation_after_stitching[0]):
+	print(colored("All elements in center_of_rotation_after_stitching are not the same, this is suspicious values in center_of_rotation_after_stitching=%s!"%(list(map(center_of_rotation_after_stitching))), "red"))
+	raise ValueError("All elements in center_of_rotation_after_stitching are not the same!")
 
 stitched_maxangle = directionAngles[angleCountCorrected-1]
 
@@ -335,9 +357,12 @@ if stitched_maxangle > np.pi:
 else:
 	print("Stitched max angle is %fpi"%(stitched_maxangle/np.pi))
 
-NEWCORPIX = NPX[0]
+NEWCORMIN = center_of_rotation_after_stitching.min()
+NEWCORMAX = center_of_rotation_after_stitching.max()
+if NEWCORMIN != NEWCORMAX:
+	print(colored("Center of rotation after stitching is not constant, NEWCORMIN=%f NEWCORMAX=%f"%(NEWCORMIN, NEWCORMAX), "red"))
 
-
+NEWCORPIX = center_of_rotation_after_stitching[0]
 
 if ARG.output_projection_matrices is not None:
 	M=float(detector_sizey)
@@ -364,7 +389,10 @@ if ARG.output_projection_matrices is not None:
 			CM = np.array([np.append(a, px0), np.append(b,py0)])
 			CM.shape=(1,2,4)
 			CameraMatrices = np.concatenate((CameraMatrices, CM))
+	print("Storing projection matrices to %s"%(os.path.abspath(ARG.output_projection_matrices)))
 	DEN.storeNdarrayAsDEN(ARG.output_projection_matrices, CameraMatrices, ARG.force)
+
+print("Stored projection matrices to %s"%(os.path.abspath(ARG.output_projection_matrices)))
 
 if ARG.write_params_file:
 	with open(paramsFile, 'w') as f:

@@ -175,7 +175,8 @@ def shiftAndReduceFrameFloat(f, shiftSize, xdim_reduced):
 		intShift = int(intShift)
 		f1 = reduceFrame(f, intShift, xdim_reduced)
 		f2 = reduceFrame(f, intShift + 1, xdim_reduced)
-		return (1.0 - floatShift) * f1 + floatShift * f2
+#		return (1.0 - floatShift) * f1 + floatShift * f2
+	return np.log((1.0 - floatShift) * np.exp(f1) + floatShift * np.exp(f2))
 
 
 #Shift by float shift size
@@ -237,7 +238,8 @@ def getInterpolatedFrameNew(inputFile, theta, df, xdim_reduced):
 #				"closestHigherAngle=%f thetaDiff=%f closestLowerAngle=%f lofac=%f theta=%f"
 #				% (closestHigherAngle, thetaDiff, closestLowerAngle, lofac,
 #				   theta))
-		f = lofac * lo + (1.0 - lofac) * hi
+#		f = lofac * lo + (1.0 - lofac) * hi
+		f = np.log(lofac * np.exp(lo) + (1.0 - lofac) * np.exp(hi))
 	return f
 
 
@@ -842,13 +844,19 @@ if sum(admissibleOffsets) != 0:
 	offset = np.nanmedian(offsets[admissibleOffsets])
 	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
 else:
-	offset = np.nanmedian(offsets)
+	print("WARNING: NO PEAK SHARPNESS > 3.5, OFFSET MIGHT BE INCORRECT, taking median of five with highest sharpness!")
+	admissibleOffsets = np.argsort(peak_sharpness)[-5:] #Take three highest sharpness indices
+	offset = np.nanmedian(offsets[admissibleOffsets])
 	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
-	print("WARNING: LOW DETECTION QUALITY OF THE OFFSET, OFFSET MIGHT BE INCORRECT!")
-	
+
 #Formatting as string shall give the full precision
 print("rotation_center_offset_pix=%s" % (offset))
 print("rotation_center_offset_pix_interp=%s" % (interpOffset))
+if ARG.input_tick is None:
+	print("rotation_center_offset=%s" %
+		  ((offset + sinogram_center_offset) * pix_size))
+	print("rotation_center_offset_interp=%s" %
+		  ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
 #Create fit
 #First compute pix size
 pix_size = 1.0
@@ -878,20 +886,30 @@ for j in range(len(ySequence)):
 	fitrow[0, 2] = (offsets[j] + sinogram_center_offset) * pix_size
 	fitrow[0, 3] = interpoffsets[j]
 	fitrow[0, 4] = (interpoffsets[j] + sinogram_center_offset) * pix_size
-	if peak_sharpness[j] == 0 or peak_sharpness[j] > 3.5:
-		fittable = np.vstack([fittable, fitrow])
+	fittable = np.vstack([fittable, fitrow])
+#	if peak_sharpness[j] == 0 or peak_sharpness[j] > 3.5:
+
+fittable = fittable[admissibleOffsets]
+
 stdoffset = offsets.std()
 stdmedian = np.nanmedian(offsets)
 fittable = fittable[np.abs(fittable[:, 1] - stdmedian) < 2 * stdoffset]
-if fittable.shape[0] > 1:
+if fittable.shape[0] > 3:
 	b, a = np.polyfit(fittable[:, 0], fittable[:, 1], 1)
 	#It is offset = a + b*y
 	print("Fit provides rotation_center_offset_pix=a + by = %f + %f y" % (a, b))
 	print("rotation_center_offset_pix_fit_a=%s" % (a))
 	print("rotation_center_offset_pix_fit_b=%s" % (b))
 	b, a = np.polyfit(fittable[:, 0], fittable[:, 3], 1)
+	predicted_offsets = a + b*fittable[:,0]
+	#Compute MAE and R-squared error
+	mae = np.mean(np.abs(predicted_offsets - fittable[:, 3]))
+	ss_res = np.sum((fittable[:,3]-predicted_offsets)**2)
+	ss_tot = np.sum((fittable[:,3]-np.mean(fittable[:,3]))**2)
+	r2 = 1 - ss_res/ss_tot
 	print("rotation_center_offset_pix_interpfit_a=%s" % (a))
 	print("rotation_center_offset_pix_interpfit_b=%s" % (b))
+	print("Fit provides rotation_center_offset_pix=a + by = %f + %f y"%(a, b))
 	if pix_size != 0:
 		b, a = np.polyfit(fittable[:, 0], fittable[:, 2], 1)
 		print("rotation_center_offset_fit_a=%s" % (a))
@@ -899,15 +917,15 @@ if fittable.shape[0] > 1:
 		b, a = np.polyfit(fittable[:, 0], fittable[:, 4], 1)
 		print("rotation_center_offset_interpfit_a=%s" % (a))
 		print("rotation_center_offset_interpfit_b=%s" % (b))
+	print("rotation_center_offset_pix_interp_mae=%s"%(mae))
+	print("rotation_center_offset_pix_interp_r2=%s"%(r2))
+num_outliers_rejected = len(ySequence) - fittable.shape[0]
+print("Out %d measurements %d were rejected as outliers"%(len(ySequence), num_outliers_rejected))
+print("Included offsets are %s"%(", ".join(["%0.2f"%x for x in fittable[:,3]])))
 
 if ARG.load_sinograms is None and not ARG.center_implementation:
 	print("sinogram_center_offset_pix=%f" % (sinogram_center_offset))
 #Offset with respect to the coordinates relative to the center of  [0, N + max_pix_shift-min_pix_shift]
-if ARG.input_tick is None:
-	print("rotation_center_offset=%s" %
-		  ((offset + sinogram_center_offset) * pix_size))
-	print("rotation_center_offset_interp=%s" %
-		  ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
 if ARG.log_file:
 	sys.stdout.close()
 	sys.stdout = sys.__stdout__

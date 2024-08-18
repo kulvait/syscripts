@@ -16,6 +16,7 @@ import pydicom
 import re
 import h5py
 import random
+import traceback
 from pathlib import Path
 from denpy import DICOM
 from denpy import PETRA
@@ -84,7 +85,7 @@ def getInfo(directory):
 	h5 = h5files[0]
 	try:
 		out = {}
-		scanData = PETRA.scanDataset(h5)
+		scanData = PETRA.scanDataset(h5, includeCurrent=False)
 		out["h5"] = os.path.realpath(h5)
 		out["rawdir"] = os.path.realpath(directory)
 		out["scanData"] = scanData
@@ -95,10 +96,9 @@ def getInfo(directory):
 				      (directory, os.path.join(directory, f)))
 				return {}
 		return out
-	except:
-		print(
-		    "Excluding directory %s because there was error parsing h5 file %s"
-		    % (directory, h5))
+	except Exception as e:
+		print("Excluding directory %s because there was error parsing h5 file %s. \nException: %s"
+		      % (directory, h5, traceback.format_exc()))
 		return {}
 
 

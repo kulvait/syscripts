@@ -17,6 +17,8 @@ import argparse
 from denpy import DEN
 import copy
 import os
+import time
+from functools import reduce
 #import multiprocessing as mp
 
 parser = argparse.ArgumentParser()
@@ -29,10 +31,13 @@ parser.add_argument("--alpha", type=str, help="Alpha mask for l1 fitting.")
 parser.add_argument("--gamma", type=str, help="Alpha mask for total variation fitting.")
 parser.add_argument("--report-transmission", type=str, default=None, help="Online transmission reporting.")
 parser.add_argument("--report-extinction", type=str, help="Online extinction reporting.")
+parser.add_argument("--report-first-extinction", type=str, help="First extinction reporting.")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--lbfgs", action="store_true")
 parser.add_argument("--fit-slope", action="store_true")
+parser.add_argument("--first-fit", type=str, default=None, help="Object to do the first fit with to be used for subsecutive fits.")
+parser.add_argument("--first-fit-size", type=int, default=None, help="Size of the basis for the first fit.")
 nonlinearity = parser.add_mutually_exclusive_group()
 nonlinearity.add_argument("--tv", action="store_true", help="Total variation fit")
 nonlinearity.add_argument("--l1", action="store_true", help="L1 fit")
@@ -48,10 +53,36 @@ frameCount = inf_img["dimspec"][2]
 basisSize = ARG.basis_size
 if ARG.basis_size > 0:
 	if inf_fit["dimspec"][2] < ARG.basis_size:
-		raise ArgumentException("ARG.basis_size=%d not in %s"%(ARG.basis_size, ARG.inputFitBasis))
+		raise ValueError("ARG.basis_size=%d not in %s"%(ARG.basis_size, ARG.inputFitBasis))
 else:
 	basisSize = inf_fit["dimspec"][3]
 
+def softplus(x): 
+	return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0)
+
+# Function to compute anisotropic total variation with precomputed masks
+def masked_anisotropic_total_variation(image, mask_x, mask_y):
+	# Compute differences in the x direction
+	dx = image[:, 1:] - image[:, :-1]
+	dx = tf.where(mask_x, dx, tf.zeros_like(dx))
+	# Compute differences in the y direction
+	dy = image[1:, :] - image[:-1, :]
+	dy = tf.where(mask_y, dy, tf.zeros_like(dy))
+	# Compute anisotropic total variation
+	tv = tf.reduce_sum(tf.abs(dx)) + tf.reduce_sum(tf.abs(dy))
+	return tv
+
+# Function to compute isotropic total variation with precomputed masks
+def masked_isotropic_total_variation(image, mask_x, mask_y):
+	# Compute differences in the x direction
+	dx = image[:, 1:] - image[:, :-1]
+	dx = tf.where(mask_x, dx, tf.zeros_like(dx))
+	# Compute differences in the y direction
+	dy = image[1:, :] - image[:-1, :]
+	dy = tf.where(mask_y, dy, tf.zeros_like(dy))
+	# Compute isotropic total variation
+	tv = tf.sqrt(tf.reduce_sum(tf.square(dx)) + tf.reduce_sum(tf.square(dy)))
+	return tv
 
 def createSVDVec(fitFile, frameCount, alpha=None):
 	inf = DEN.readHeader(fitFile)
@@ -108,56 +139,63 @@ def reduce_array_by_factor(arr, k):
 
 class AlphaGammaMinimizer:
 	def __init__(self, b, fitVec, initScale=None, alpha=None, gamma=None, weight_l1=1, weight_tv=1, weight_neg=1, dtype=tf.float32):
-		self.b = copy.deepcopy(b)
 		self.reduce_k = 5
-		self.fitVec = fitVec
-		self.initScale = initScale
+		self.numpyshape = b.shape
+		self.numpyshape_reduced = (b.shape[0] // self.reduce_k, b.shape[1] // self.reduce_k)
+		self.weight_l1 = weight_l1
+		self.weight_neg = weight_neg
+		self.weight_tv = weight_tv
 		self.dtype = dtype
-		shape0, shape1 = b.shape
-		shape0reduced = shape0 // self.reduce_k
-		shape1reduced = shape1 // self.reduce_k
-		n = fitVec.shape[0]
-		self.shape0 = shape0
-		self.shape1 = shape1
-		self.n = n
-		#Create arrays and their reduced versions
+		self.n = fitVec.shape[0]
+		self.initScale = initScale
+#Copy relevant arrays
+		self.b = copy.deepcopy(b)
+		self.b_reduced = reduce_array_by_factor(self.b, self.reduce_k)
+		self.fitVec = copy.deepcopy(fitVec)
 		self.alpha = np.ones_like(b) if alpha is None else copy.deepcopy(alpha)
 		self.gamma = np.ones_like(b) if gamma is None else copy.deepcopy(gamma)
 		self.gamma_reduced = reduce_array_by_factor(self.gamma, self.reduce_k)
-		self.b_alpha = np.multiply(self.b, self.alpha)
-		self.b_gamma = np.multiply(self.b, self.gamma)
-		self.b_reduced = reduce_array_by_factor(self.b, self.reduce_k)
-		self.b_gamma_reduced = np.multiply(self.b_reduced, self.gamma_reduced)
-		self.alpha.shape = [shape0, shape1, 1]
-		self.gamma.shape = [shape0, shape1, 1]
-		self.gamma_reduced.shape = [shape0reduced, shape1reduced, 1]
-		self.b_alpha.shape = [shape0, shape1, 1]
-		self.b_gamma.shape = [shape0, shape1, 1]
-		self.b_gamma_reduced.shape = [shape0reduced, shape1reduced, 1]
-		self.fitVecAlpha = np.zeros((n, shape0, shape1, 1), dtype=np.float32)
-		self.fitVecGamma = np.zeros((n, shape0, shape1, 1), dtype=np.float32)
-		self.fitVecGamma_reduced = np.zeros((n, shape0reduced, shape1reduced, 1), dtype=np.float32)
-		for i in range(n):
+		self.fitVec_reduced = np.zeros((self.n, ) + self.numpyshape_reduced, dtype=np.float32)
+		for i in range(self.n):
 			v = fitVec[i]
 			v_reduced = reduce_array_by_factor(v, self.reduce_k)
-			v.shape = [shape0, shape1, 1]
-			v_reduced.shape = [shape0reduced, shape1reduced, 1]
-			self.fitVecAlpha[i] = initScale[i] * np.multiply(v, self.alpha)
-			self.fitVecGamma[i] = initScale[i] * np.multiply(v, self.gamma)
-			self.fitVecGamma_reduced[i] = initScale[i] * np.multiply(v_reduced, self.gamma_reduced)
-		self.b.shape = [shape0, shape1, 1]
-		self.ones = np.ones([shape0, shape1, 1], dtype=np.float32)
-		self.zeros = np.zeros([shape0, shape1, 1], dtype=np.float32)
+			self.fitVec[i] = initScale[i] * v
+			self.fitVec_reduced[i] = initScale[i] * v_reduced
+		self.ones = np.ones(self.numpyshape, dtype=np.float32)
+		self.zeros = np.zeros(self.numpyshape, dtype=np.float32)
 		self.softzeros = self.ones * np.log(2) # Softplus(0) = log(2)
 		self.weight_l1 = weight_l1
 		self.weight_neg = weight_neg
 		self.weight_tv = weight_tv
+		self.alpha = self.alpha > 0
+		self.gamma = self.gamma > 0
+		self.gamma_reduced = self.gamma_reduced > 0
+		self.gamma_x_mask = tf.constant(self.gamma[:,1:] & self.gamma[:,:-1], dtype=tf.bool)
+		self.gamma_y_mask = tf.constant(self.gamma[1:,:] & self.gamma[:-1,:], dtype=tf.bool)
+		self.gamma_reduced_x_mask = tf.constant(self.gamma_reduced[:,1:] & self.gamma_reduced[:,:-1], dtype=tf.bool)
+		self.gamma_reduced_y_mask = tf.constant(self.gamma_reduced[1:,:] & self.gamma_reduced[:-1,:], dtype=tf.bool)
+	
+	def getTVTensorReduced(self, B, FF):
+		#The following does not converge
+		#TVI = tf.math.subtract(tf.math.log(tf.math.softplus(FF)), tf.math.log(B))
+		#The symmetric sum does not converge
+		#TVI = tf.math.divide_no_nan(tf.math.softplus(FF), B) + tf.math.divide_no_nan(B, tf.math.softplus(FF))
+		#The following converges but is not symmetric
+		#TVI = tf.math.divide_no_nan(tf.math.softplus(FF), B)
+		#The following converges as well
+		TVI = tf.math.divide(FF, B) + tf.math.divide(B, FF)
+		return self.weight_tv * masked_isotropic_total_variation(TVI, self.gamma_reduced_x_mask, self.gamma_reduced_y_mask)
 
 	def getTVTensor(self, B, FF):
-		#dif_tv = tf.math.divide_no_nan(FF, B)
-		#dif_tv = tf.math.log(tf.math.softplus(B)) - tf.math.log(tf.math.softplus(FF))
-		dif_tv = tf.math.divide_no_nan(FF, B) + tf.math.divide_no_nan(B, FF)
-		return self.weight_tv * tf.image.total_variation(dif_tv)
+		#The following does not converge
+		#TVI = tf.math.subtract(tf.math.log(tf.math.softplus(FF)), tf.math.log(B))
+		#The symmetric sum does not converge
+		#TVI = tf.math.divide_no_nan(tf.math.softplus(FF), B) + tf.math.divide_no_nan(B, tf.math.softplus(FF))
+		#The following converges but is not symmetric
+		#TVI = tf.math.divide_no_nan(tf.math.softplus(FF), B)
+		#The following converges as well
+		TVI = tf.math.divide(FF, B) + tf.math.divide(B, FF)
+		return self.weight_tv * masked_isotropic_total_variation(TVI, self.gamma_x_mask, self.gamma_y_mask)
 
 	def getL1Tensor(self, B, FF):
 		ones_tf = tf.constant(self.ones, dtype=self.dtype)
@@ -165,69 +203,54 @@ class AlphaGammaMinimizer:
 		dif_l1 = tf.math.subtract(tf.math.softplus(tf.math.subtract(ones_tf, tf.math.divide_no_nan(FF, B))), softzeros_tf)
 		#dif_l1 = tf.math.subtract(tf.math.softplus(tf.math.subtract(tf.math.divide_no_nan(B, FF), ones_tf)), softzeros_tf)
 		#dif_l1 = tf.math.subtract(FF, B)
-		return self.weight_l1 * tf.reduce_sum(tf.abs(dif_l1))
+		return self.weight_l1 * tf.reduce_sum(tf.abs(tf.boolean_mask(dif_l1, self.alpha)))
 
 	def getGammaNegativeTensor(self, B, FF):
 		zeros_tf = tf.constant(self.zeros, dtype=self.dtype)
 		neg_l2 = tf.math.maximum(tf.math.subtract(B, FF), zeros_tf)
-		return self.weight_neg * tf.math.sqrt(tf.reduce_sum(tf.square(neg_l2)))
+		return self.weight_neg * tf.math.sqrt(tf.reduce_sum(tf.square(tf.boolean_mask(neg_l2, self.gamma))))
 
 	def getMinimizer(self):
 		def minimizer(x):
-			b_alpha_tf = tf.constant(self.b_alpha, dtype=self.dtype)
-			b_gamma_tf = tf.constant(self.b_gamma, dtype=self.dtype)
-			b_gamma_reduced_tf = tf.constant(self.b_gamma_reduced, dtype=self.dtype)
-			ones_tf = tf.constant(self.ones, dtype=self.dtype)
-			ff_alpha = x[0] * tf.constant(self.fitVecAlpha[0], dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma[0], dtype=self.dtype)
-			ff_gamma_reduced = x[0] * tf.constant(self.fitVecGamma_reduced[0], dtype=self.dtype)
-			for k in range(1, self.n):
-				ff_alpha += x[k] * tf.constant(self.fitVecAlpha[k], dtype=self.dtype)
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma[k], dtype=self.dtype)
-				ff_gamma_reduced += x[k] * tf.constant(self.fitVecGamma_reduced[k], dtype=self.dtype)
-			ret = None
+			b_tf = tf.constant(self.b, dtype=self.dtype)
+			b_reduced_tf = tf.constant(self.b_reduced, dtype=self.dtype)
+			ff = reduce(tf.add, (x[i] * tf.constant(self.fitVec[i], dtype=self.dtype) for i in range(self.n)))
+			ff_reduced = reduce(tf.add, (x[i] * tf.constant(self.fitVec_reduced[i], dtype=self.dtype) for i in range(self.n)))
+			ret = 0
 			if self.weight_l1 > 0:
-				ret = self.getL1Tensor(b_alpha_tf, ff_alpha)
+				ret = self.getL1Tensor(b_tf, ff)
 			if self.weight_tv > 0:
-				if ret is None:
-					ret = self.getTVTensor(b_gamma_reduced_tf, ff_gamma_reduced)
-				else:
-					ret += self.getTVTensor(b_gamma_reduced_tf, ff_gamma_reduced)
+				ret += self.getTVTensorReduced(b_reduced_tf, ff_reduced)
 			if self.weight_neg > 0:
-				if ret is None:
-					ret = self.getGammaNegativeTensor(b_gamma_tf, ff_gamma)
-				else:
-					ret += self.getGammaNegativeTensor(b_gamma_tf, ff_gamma)
+				ret += self.getGammaNegativeTensor(b_tf, ff)
 			return ret
 		return minimizer
 
 	def getL1Minimizer(self):
 		def l1_minimizer(x):
-			b_alpha_tf = tf.constant(self.b, dtype=self.dtype)
-			ff_alpha = x[0] * tf.constant(self.fitVecAlpha[0], dtype=self.dtype)
+			b_tf = tf.constant(self.b, dtype=self.dtype)
+			ff = x[0] * tf.constant(self.fitVec[0], dtype=self.dtype)
 			for k in range(1, self.n):
-				ff_alpha += x[k] * tf.constant(self.fitVecAlpha[k], dtype=self.dtype)
-			return self.getL1Tensor(b_alpha_tf, ff_alpha)
+				ff += x[k] * tf.constant(self.fitVec[k], dtype=self.dtype)
+			return self.getL1Tensor(b_tf, ff)
 		return l1_minimizer
 
 	def getTVMinimizer(self):
 		def tv_minimizer(x):
-			ones_tf = tf.constant(self.ones, dtype=self.dtype)
-			b_gamma_tf = tf.constant(self.b_gamma_reduced, dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma_reduced[0], dtype=self.dtype)
+			b_reduced_tf = tf.constant(self.b_reduced, dtype=self.dtype)
+			ff_reduced = x[0] * tf.constant(self.fitVec_reduced[0], dtype=self.dtype)
 			for k in range(1, self.n):
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma_reduced[k], dtype=self.dtype)
-			return self.getTVTensor(b_gamma_tf, ff_gamma)
+				ff_reduced += x[k] * tf.constant(self.fitVec_reduced[k], dtype=self.dtype)
+			return self.getTVTensorReduced(b_reduced_tf, ff_reduced)
 		return tv_minimizer
 	
 	def getNegMinimizer(self):
 		def neg_minimizer(x):
-			ones_tf = tf.constant(self.ones, dtype=self.dtype)
-			b_gamma_tf = tf.constant(self.b_gamma, dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma[0], dtype=self.dtype)
+			b_tf = tf.constant(self.b, dtype=self.dtype)
+			ff = x[0] * tf.constant(self.fitVec[0], dtype=self.dtype)
 			for k in range(1, self.n):
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma[k], dtype=self.dtype)
-			return self.getGammaNegativeTensor(b_gamma_tf, ff_gamma)
+				ff += x[k] * tf.constant(self.fitVec[k], dtype=self.dtype)
+			return self.getGammaNegativeTensor(b_tf, ff)
 		return neg_minimizer
 
 	def reportMinimizerValue(self, x, x0=None):
@@ -268,85 +291,55 @@ class AlphaGammaConsecutiveMinimizer:
 		self.reduce_k = 5
 		self.numpyshape = b.shape
 		self.numpyshape_reduced = (b.shape[0] // self.reduce_k, b.shape[1] // self.reduce_k)
-#		self.tensorshape = self.numpyshape
-#		self.tensorshape_reduced = self.numpyshape_reduced
-#For https://www.tensorflow.org/api_docs/python/tf/image/total_variation
-		self.tensorshape = self.numpyshape + (1,)
-		self.tensorshape_reduced = self.numpyshape_reduced + (1,)
 		self.weight_l1 = weight_l1
 		self.weight_neg = weight_neg
 		self.weight_tv = weight_tv
 		self.weight_cns_l1 = weight_cns_l1
 		self.weight_cns_tv = weight_cns_tv
 		self.dtype = dtype
-		n = fitVec.shape[0]
-		self.n = n
+		self.n = fitVec.shape[0]
 		self.initScale = initScale
 #Copy relevant arrays
 		self.b = copy.deepcopy(b)
-		self.b_prev = copy.deepcopy(b_prev)
 		self.b_reduced = reduce_array_by_factor(self.b, self.reduce_k)
-		self.ff_prev = copy.deepcopy(ff_prev)
-		self.fitVec = fitVec
+		self.fitVec = copy.deepcopy(fitVec)
 		self.alpha = np.ones_like(b) if alpha is None else copy.deepcopy(alpha)
 		self.gamma = np.ones_like(b) if gamma is None else copy.deepcopy(gamma)
-#Maniplate with arrays to get relevant values
 		self.gamma_reduced = reduce_array_by_factor(self.gamma, self.reduce_k)
-		self.b_alpha = np.multiply(self.b, self.alpha)
-		self.b_gamma = np.multiply(self.b, self.gamma)
-		self.b_gamma_reduced = np.multiply(self.b_reduced, self.gamma_reduced)
-		#self.ffoverb_prev_reduced = reduce_array_by_factor(self.ffoverb_prev, self.reduce_k)
-		#self.ffoverb_prev_alpha = np.multiply(self.ffoverb_prev, self.alpha)
-		self.log_ffoverb_prev = np.log(np.divide(self.ff_prev, self.b_prev))
-		self.log_ffoverb_prev_gamma = np.multiply(self.log_ffoverb_prev, self.gamma)
-		#self.ffoverb_prev_gamma_reduced = np.multiply(self.ffoverb_prev_reduced, self.gamma_reduced)
-		self.ones = np.ones(self.tensorshape, dtype=np.float32)
-		self.zeros = np.zeros(self.tensorshape, dtype=np.float32)
-		self.softzeros = self.ones * np.log(2) # Softplus(0) = log(2)
-#Adjust shapes
-		self.b.shape = self.tensorshape
-		#self.ffoverb_prev.shape = self.tensorshape
-		self.alpha.shape = self.tensorshape
-		self.gamma.shape = self.tensorshape
-		self.b_reduced.shape = self.tensorshape_reduced
-		#self.ffoverb_prev_reduced.shape = self.tensorshape_reduced
-		self.gamma_reduced.shape = self.tensorshape_reduced
-		self.log_ffoverb_prev.shape = self.tensorshape
-		self.log_ffoverb_prev_gamma.shape = self.tensorshape
-		self.b_alpha.shape = self.tensorshape
-		self.b_gamma.shape = self.tensorshape
-		self.b_gamma_reduced.shape = self.tensorshape_reduced
-		#self.ffoverb_prev_alpha.shape = self.tensorshape
-		#self.ffoverb_prev_gamma.shape = self.tensorshape
-		#self.ffoverb_prev_gamma_reduced.shape = self.tensorshape_reduced
-		self.fitVecAlpha = np.zeros((n, ) + self.tensorshape, dtype=np.float32)
-		self.fitVecGamma = np.zeros((n, ) + self.tensorshape, dtype=np.float32)
-		self.fitVecGamma_reduced = np.zeros((n, ) + self.tensorshape_reduced, dtype=np.float32)
-		for i in range(n):
+		self.fitVec_reduced = np.zeros((self.n, ) + self.numpyshape_reduced, dtype=np.float32)
+		for i in range(self.n):
 			v = fitVec[i]
 			v_reduced = reduce_array_by_factor(v, self.reduce_k)
-			v.shape = self.tensorshape
-			v_reduced.shape = self.tensorshape_reduced
-			self.fitVecAlpha[i] = initScale[i] * np.multiply(v, self.alpha)
-			self.fitVecGamma[i] = initScale[i] * np.multiply(v, self.gamma)
-			self.fitVecGamma_reduced[i] = initScale[i] * np.multiply(v_reduced, self.gamma_reduced)
-		self.gamma = self.gamma > 0
+			self.fitVec[i] = initScale[i] * v
+			self.fitVec_reduced[i] = initScale[i] * v_reduced
+		self.ones = np.ones(self.numpyshape, dtype=np.float32)
+		self.zeros = np.zeros(self.numpyshape, dtype=np.float32)
+		self.softzeros = self.ones * np.log(2) # Softplus(0) = log(2)
+		self.weight_l1 = weight_l1
+		self.weight_neg = weight_neg
+		self.weight_tv = weight_tv
 		self.alpha = self.alpha > 0
-#		self.alpha.shape = [shape0, shape1, 1]
-#		self.gamma.shape = [shape0, shape1, 1]
-#		self.gamma_reduced.shape = [shape0reduced, shape1reduced, 1]
-#		self.b_alpha.shape = [shape0, shape1, 1]
-#		self.b_gamma.shape = [shape0, shape1, 1]
-#		self.b_gamma_reduced.shape = [shape0reduced, shape1reduced, 1]
-#		self.ffoverb_prev.shape = [shape0, shape1, 1]
-#		self.ffoverb_prev_reduced.shape = [shape0reduced, shape1reduced, 1]
-#		self.b.shape = [shape0, shape1, 1]
+		self.gamma = self.gamma > 0
+		self.gamma_reduced = self.gamma_reduced > 0
+		self.gamma_x_mask = tf.constant(self.gamma[:,1:] & self.gamma[:,:-1], dtype=tf.bool)
+		self.gamma_y_mask = tf.constant(self.gamma[1:,:] & self.gamma[:-1,:], dtype=tf.bool)
+		self.gamma_reduced_x_mask = tf.constant(self.gamma_reduced[:,1:] & self.gamma_reduced[:,:-1], dtype=tf.bool)
+		self.gamma_reduced_y_mask = tf.constant(self.gamma_reduced[1:,:] & self.gamma_reduced[:-1,:], dtype=tf.bool)
+		self.ff_prev = ff_prev
+		self.b_prev = b_prev
+		self.ext_prev = np.log(np.divide(ff_prev, b_prev))
+		self.tf_b_alpha = tf.constant(self.b[self.alpha], dtype=self.dtype)
+		self.tf_ext_prev_gamma = tf.constant(self.ext_prev[self.gamma], dtype=self.dtype)
+		self.tf_b_gamma = tf.constant(self.b[self.gamma], dtype=self.dtype)
+		self.tf_fitVec_alpha = [tf.constant(self.fitVec[k][self.alpha], dtype=self.dtype) for k in range(self.n)]
+		self.tf_fitVec_gamma = [tf.constant(self.fitVec[k][self.gamma], dtype=self.dtype) for k in range(self.n)]
 	
 	def getTVCnsTensor(self, EXTPREV, B, FF):
 		#dif_tv = tf.math.divide_no_nan(FF, PF)
 		#dif_tv = tf.math.log(tf.math.softplus(PF)) - tf.math.log(tf.math.softplus(FF))
-		dif_tv = tf.math.subtract(EXTPREV, tf.math.log(tf.math.divide_no_nan(tf.math.softplus(FF), B)))
-		return self.weight_cns_tv * tf.image.total_variation(dif_tv)
+		#dif_tv = tf.math.subtract(EXTPREV, tf.math.log(tf.math.divide_no_nan(tf.math.softplus(FF), B)))
+		dif_tv = tf.math.subtract(EXTPREV, FF)
+		return self.weight_cns_tv * masked_anisotropic_total_variation(dif_tv, self.gamma_x_mask, self.gamma_y_mask)
 
 	def getL1CnsTensor(self, EXTPREV, B, FF):
 		#EXTPREV = tf.boolean_mask(EXTPREV, self.gamma)
@@ -355,139 +348,108 @@ class AlphaGammaConsecutiveMinimizer:
 		#The following pushes left tail of ext down
 		#dif_l1 = tf.math.subtract(PX, tf.math.divide_no_nan(FF, B))
 		#Mostly both will be larger than one, so let's try with logarithm
-		dif_b = tf.math.log(tf.math.divide_no_nan(tf.math.softplus(FF), B))
+		dif_b = tf.math.log(tf.math.divide(tf.math.softplus(FF), B))
 		dif_l1 = tf.math.subtract(EXTPREV, dif_b)
 		#ones_tf = tf.constant(self.ones, dtype=self.dtype)
 		#softzeros_tf = tf.constant(self.softzeros, dtype=self.dtype)
 		#dif_l1 = tf.math.subtract(tf.math.softplus(tf.math.subtract(ones_tf, tf.math.divide_no_nan(FF, PF))), softzeros_tf)
 		#dif_l1 = tf.math.subtract(tf.math.softplus(tf.math.subtract(tf.math.divide_no_nan(PF, FF), ones_tf)), softzeros_tf)
-		#return self.weight_cns_l1 * tf.reduce_sum(tf.abs(tf.boolean_mask(dif_l1, gamma)))
-		return self.weight_cns_l1 * tf.reduce_sum(tf.abs(tf.ragged.boolean_mask(dif_l1, gamma)))
-		#return self.weight_cns_l1 * tf.reduce_sum(tf.abs(dif_l1))
+		return self.weight_cns_l1 * tf.reduce_sum(tf.abs(dif_l1))
 
 	def getTVTensor(self, B, FF):
 		#dif_tv = tf.math.divide_no_nan(FF, B)
 		#dif_tv = tf.math.log(tf.math.softplus(B)) - tf.math.log(tf.math.softplus(FF))
-		dif_tv = tf.math.divide_no_nan(FF, B) + tf.math.divide_no_nan(B, FF)
-		return self.weight_tv * tf.image.total_variation(dif_tv)
+		TVI = tf.math.divide(FF, B) + tf.math.divide(B, FF)
+		return self.weight_tv * masked_isotropic_total_variation(TVI, self.gamma_reduced_x_mask, self.gamma_reduced_y_mask)
 
 	def getL1Tensor(self, B, FF):
-		ones_tf = tf.constant(self.ones, dtype=self.dtype)
-		softzeros_tf = tf.constant(self.softzeros, dtype=self.dtype)
-		dif_l1 = tf.math.subtract(tf.math.softplus(tf.math.subtract(ones_tf, tf.math.divide_no_nan(FF, B))), softzeros_tf)
+		#ones_tf = tf.constant(self.ones, dtype=self.dtype)
+		#softzeros_tf = tf.constant(self.softzeros, dtype=self.dtype)
+		#dif_l1 = tf.math.subtract(tf.math.softplus(tf.math.subtract(ones_tf, tf.math.divide_no_nan(FF, B))), softzeros_tf)
 		#dif_l1 = tf.math.subtract(tf.math.softplus(tf.math.subtract(tf.math.divide_no_nan(B, FF), ones_tf)), softzeros_tf)
 		#dif_l1 = tf.math.subtract(FF, B)
 		#return self.weight_l1 * tf.reduce_sum(tf.abs(dif_l1))
-		return self.weight_l1 * tf.reduce_sum(tf.abs(tf.ragged.boolean_mask(dif_l1, alpha)))
+		dif_l1 = tf.math.log(tf.math.divide(tf.math.softplus(FF), B))
+		return self.weight_l1 * tf.reduce_sum(tf.abs(dif_l1))
 
 	def getGammaNegativeTensor(self, B, FF):
-		zeros_tf = tf.constant(self.zeros, dtype=self.dtype)
+		zeros_tf = tf.zeros_like(B)
 		neg_l2 = tf.math.maximum(tf.math.subtract(B, FF), zeros_tf)
 		return self.weight_neg * tf.math.sqrt(tf.reduce_sum(tf.square(neg_l2)))
 
 	def getMinimizer(self):
 		def minimizer(x):
-			b_alpha_tf = tf.constant(self.b_alpha, dtype=self.dtype)
-			b_gamma_tf = tf.constant(self.b_gamma, dtype=self.dtype)
-			b_gamma_reduced_tf = tf.constant(self.b_gamma_reduced, dtype=self.dtype)
-			logprev_tf = tf.constant(self.log_ffoverb_prev_gamma, dtype=self.dtype)
-			ones_tf = tf.constant(self.ones, dtype=self.dtype)
-			ff_alpha = x[0] * tf.constant(self.fitVecAlpha[0], dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma[0], dtype=self.dtype)
-			ff_gamma_reduced = x[0] * tf.constant(self.fitVecGamma_reduced[0], dtype=self.dtype)
-			for k in range(1, self.n):
-				ff_alpha += x[k] * tf.constant(self.fitVecAlpha[k], dtype=self.dtype)
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma[k], dtype=self.dtype)
-				ff_gamma_reduced += x[k] * tf.constant(self.fitVecGamma_reduced[k], dtype=self.dtype)
-			ret = None
+			ret = 0.0
 			if self.weight_l1 > 0:
-				ret = self.getL1Tensor(b_alpha_tf, ff_alpha)
-			if self.weight_tv > 0:
-				t = self.getTVTensor(b_gamma_reduced_tf, ff_gamma_reduced)
-				if ret is None:
-					ret = t
-				else:
-					ret += t
-			if self.weight_neg > 0:
-				t = self.getGammaNegativeTensor(b_gamma_tf, ff_gamma)
-				if ret is None:
-					ret = t
-				else:
-					ret += t
+				ff_alpha = reduce(tf.add, (x[i] * self.tf_fitVec_alpha[i] for i in range(self.n)))
+				ret += self.getL1Tensor(self.tf_b_alpha, ff_alpha)
 			if self.weight_cns_l1 > 0:
-				t = self.getL1CnsTensor(logprev_tf, b_gamma_tf, ff_gamma)
-				if ret is None:
-					ret = t
-				else:
-					ret += t
+				ff_gamma = reduce(tf.add, (x[i] * self.tf_fitVec_gamma[i] for i in range(self.n)))
+				ret += self.getL1CnsTensor(self.tf_ext_prev_gamma, self.tf_b_gamma, ff_gamma)
+			if self.weight_tv > 0:
+				b_reduced_tf = tf.constant(self.b_reduced, dtype=self.dtype)
+				ff_reduced_tf = reduce(tf.add, (x[i] * tf.constant(self.fitVec_reduced[i], dtype=self.dtype) for i in range(self.n)))
+				ret += self.getTVTensor(b_reduced_tf, ff_reduced_tf)
+			if self.weight_neg > 0:
+				b_gamma = tf.constant(self.b[self.gamma], dtype=self.dtype)
+				ff_gamma = reduce(tf.add, (x[i] * self.tf_fitVec_gamma[i] for i in range(self.n)))
+				ret += self.getGammaNegativeTensor(b_gamma, ff_gamma)
 			if self.weight_cns_tv > 0:
-				t = self.getTVCnsTensor(logprev_tf, b_gamma_tf, ff_gamma)
-				if ret is None:
-					ret = t
-				else:
-					ret += t
+				ext_prev_tf = tf.constant(self.ext_prev, dtype=self.dtype)
+				b_tf = tf.constant(self.b, dtype=self.dtype)
+				ff = reduce(tf.add, (x[i] * tf.constant(self.fitVec[i], dtype=self.dtype) for i in range(self.n)))
+				#ret += self.getTVCnsTensor(ext_prev_tf, b_tf, ff)
+				#Try this
+				ff_prev_tf = tf.constant(self.ff_prev, dtype=self.dtype)
+				ret += self.getTVCnsTensor(ff_prev_tf, b_tf, ff)
 			return ret
 		return minimizer
 
 	def getL1Minimizer(self):
 		def l1_minimizer(x):
-			b_alpha_tf = tf.constant(self.b, dtype=self.dtype)
-			ff_alpha = x[0] * tf.constant(self.fitVecAlpha[0], dtype=self.dtype)
-			for k in range(1, self.n):
-				ff_alpha += x[k] * tf.constant(self.fitVecAlpha[k], dtype=self.dtype)
-			return self.getL1Tensor(b_alpha_tf, ff_alpha)
+			ff_alpha = reduce(tf.add, (x[i] * self.tf_fitVec_alpha[i] for i in range(self.n)))
+			return self.getL1Tensor(self.tf_b_alpha, ff_alpha)
 		return l1_minimizer
 
 	def getTVMinimizer(self):
 		def tv_minimizer(x):
-			b_gamma_tf = tf.constant(self.b_gamma_reduced, dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma_reduced[0], dtype=self.dtype)
-			for k in range(1, self.n):
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma_reduced[k], dtype=self.dtype)
-			return self.getTVTensor(b_gamma_tf, ff_gamma)
+			b_reduced_tf = tf.constant(self.b_reduced, dtype=self.dtype)
+			ff_reduced_tf = reduce(tf.add, (x[i] * tf.constant(self.fitVec_reduced[i], dtype=self.dtype) for i in range(self.n)))
+			return self.getTVTensor(b_reduced_tf, ff_reduced_tf)
 		return tv_minimizer
 	
 	def getNegMinimizer(self):
 		def neg_minimizer(x):
-			ones_tf = tf.constant(self.ones, dtype=self.dtype)
-			b_gamma_tf = tf.constant(self.b_gamma, dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma[0], dtype=self.dtype)
-			for k in range(1, self.n):
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma[k], dtype=self.dtype)
-			return self.getGammaNegativeTensor(b_gamma_tf, ff_gamma)
+			b_gamma = tf.constant(self.b[self.gamma], dtype=self.dtype)
+			ff_gamma = reduce(tf.add, (x[i] * self.tf_fitVec_gamma[i] for i in range(self.n)))
+			return self.getGammaNegativeTensor(b_gamma, ff_gamma)
 		return neg_minimizer
 
 	def getCnsL1Minimizer(self):
 		def cns_l1_minimizer(x):
-			logprev_tf = tf.constant(self.log_ffoverb_prev_gamma, dtype=self.dtype)
-			b_gamma_tf = tf.constant(self.b_gamma, dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma[0], dtype=self.dtype)
-			for k in range(1, self.n):
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma[k], dtype=self.dtype)
-			return self.getL1CnsTensor(logprev_tf, b_gamma_tf, ff_gamma)
+			ff_gamma = reduce(tf.add, (x[i] * self.tf_fitVec_gamma[i] for i in range(self.n)))
+			return self.getL1CnsTensor(self.tf_ext_prev_gamma, self.tf_b_gamma, ff_gamma)
 		return cns_l1_minimizer
 
 	def reportState(self):
 		DEN.storeNdarrayAsDEN("~/tmp/AGF_ffoverb_prev_gamma.den", self.ffoverb_prev_gamma, force=True)
 	
 	def reportGammaState(self, x):
-		DEN.storeNdarrayAsDEN("AGF_log_ffoverb_prev_gamma.den", np.reshape(self.log_ffoverb_prev_gamma, self.numpyshape), force=True)
-		DEN.storeNdarrayAsDEN("AGF_b_gamma.den", np.reshape(self.b_gamma, self.numpyshape), force=True)
-		ffg = x[0] * self.fitVecGamma[0]
+		DEN.storeNdarrayAsDEN("AGF_ext_prev.den", self.ext_prev, force=True)
+		DEN.storeNdarrayAsDEN("AGF_b.den", self.b, force=True)
+		ffg = x[0] * self.fitVec[0]
 		for k in range(1, self.n):
-			ffg += x[k] * self.fitVecGamma[k]
+			ffg += x[k] * self.fitVec[k]
 		for k in range(self.n):
-			DEN.storeNdarrayAsDEN("AGF_fitVecGamma_%d.den"%k, np.reshape(self.fitVecGamma[k], self.numpyshape), force=True)
-		DEN.storeNdarrayAsDEN("AGF_ff_gamma.den", np.reshape(ffg, self.numpyshape), force=True)
+			DEN.storeNdarrayAsDEN("AGF_fitVec_%d.den"%k, self.fitVec[k], force=True)
+		DEN.storeNdarrayAsDEN("AGF_ff_x.den", ffg, force=True)
 
 	def getCnsTVMinimizer(self):
 		def cns_tv_minimizer(x):
-			logprev_tf = tf.constant(self.log_ffoverb_prev_gamma, dtype=self.dtype)
-			b_gamma_tf = tf.constant(self.b_gamma, dtype=self.dtype)
-			ff_gamma = x[0] * tf.constant(self.fitVecGamma[0], dtype=self.dtype)
-			for k in range(1, self.n):
-				ff_gamma += x[k] * tf.constant(self.fitVecGamma[k], dtype=self.dtype)
-			return self.getTVCnsTensor(logprev_tf, b_gamma_tf, ff_gamma)
+			ext_prev_tf = tf.constant(self.ext_prev, dtype=self.dtype)
+			b_tf = tf.constant(self.b, dtype=self.dtype)
+			ff = reduce(tf.add, (x[i] * tf.constant(self.fitVec[i], dtype=self.dtype) for i in range(self.n)))
+			return self.getTVCnsTensor(ext_prev_tf, b_tf, ff)
 		return cns_tv_minimizer
 
 	def reportMinimizerValue(self, x, x0=None):
@@ -578,6 +540,8 @@ if ARG.report_transmission is not None:
 	DEN.writeEmptyDEN(ARG.report_transmission, [inf_fit["dimspec"][0], inf_fit["dimspec"][1], inf_img["dimspec"][2]], elementtype=np.dtype("<f4"), force=ARG.force)
 if ARG.report_extinction is not None:
 	DEN.writeEmptyDEN(ARG.report_extinction, [inf_fit["dimspec"][0], inf_fit["dimspec"][1], inf_img["dimspec"][2]], elementtype=np.dtype("<f4"), force=ARG.force)
+if ARG.report_first_extinction is not None:
+	DEN.writeEmptyDEN(ARG.report_first_extinction, [inf_fit["dimspec"][0], inf_fit["dimspec"][1], 1], elementtype=np.dtype("<f4"), force=ARG.force)
 
 #Initial extimate based on the firts frame
 
@@ -604,12 +568,12 @@ x_zero[0] = 1.0
 x0 = x_zero
 
 
-def compute_lbfgs(minimizer, x0):
+def compute_lbfgs(minimizer, x0, max_iterations=50, parallel_iterations=1):
 	def value_and_gradients_function(x):
 		loss, grads = get_value_and_grads(minimizer, x)
 		return loss, grads
 	init_position = tf.Variable(x0, dtype=tf.float32)
-	opt = tfp.optimizer.lbfgs_minimize(value_and_gradients_function=value_and_gradients_function,initial_position=init_position)
+	opt = tfp.optimizer.lbfgs_minimize(value_and_gradients_function=value_and_gradients_function,initial_position=init_position, max_iterations=max_iterations, parallel_iterations=parallel_iterations)
 	return opt
 
 def compute_adam(minimizer, x0):
@@ -657,18 +621,77 @@ def compute_adam(minimizer, x0):
 
 np.set_printoptions(precision=2)
 
-def softplus(x): 
-	return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0)
+def formatTime(t_dif):
+	t_dif = int(t_dif)
+	hours = t_dif // 3600
+	minutes = (t_dif % 3600) // 60
+	seconds = t_dif % 60
+	if hours == 0:
+		if minutes == 0:
+			return "%.2fs"%seconds
+		else:
+			return "%02dm %02ds"%(minutes, seconds)
+	else:
+		return "%02dh %02dm %02ds"%(hours, minutes, seconds)
+
+def report_time(start_time, start_time_k, end_time_k, k, frameCount):
+	elapsed_time = end_time_k - start_time
+	elapsed_time_k = end_time_k - start_time_k
+	remaining_time = elapsed_time / (k + 1) * (frameCount - k - 1)
+	print("Frame %d/%d, elapsed time %s, elapsed time for frame %s, estimated remaining time %s"%(k, frameCount, formatTime(elapsed_time_k), formatTime(elapsed_time), formatTime(remaining_time)))
+
+start_time = time.time()
+
+ff_first = None
+b_first = None
+if ARG.first_fit is not None:
+	b0 = DEN.getFrame(ARG.first_fit, 0)
+	b0 = softplus(b0)
+	firstFitSize = basisVec.shape[0]
+	if ARG.first_fit_size is not None:
+		firstFitSize = ARG.first_fit_size
+	AGM = AlphaGammaMinimizer(b0, basisVec[:firstFitSize], fitScale[:firstFitSize], alpha, gamma, weight_l1=1, weight_tv=0, weight_neg=0, dtype=tf.float32)
+	minimizer = AGM.getMinimizer()
+	if ARG.lbfgs:
+		opt = compute_lbfgs(minimizer, x0[:firstFitSize], max_iterations=100, parallel_iterations=5)
+		x = opt.position.numpy().astype(np.float32)
+		if not opt.converged:
+			print("ERROR: LBFGS optimization did not converge")
+		if np.any(np.isnan(x)):
+			x, losses = compute_adam(minimizer, x0[:firstFitSize])
+		else:
+			x0[:firstFitSize] = x #Update initial estimate
+	else:
+		x, losses = compute_adam(minimizer, x0[:firstFitSize])
+		x = x.numpy()
+		x0[:firstFitSize] = x #Update initial estimate
+		#plt.plot(losses)
+	fitval_loss = minimizer(x).numpy()
+	xscaled = fitScale[:firstFitSize] * x
+	if ARG.verbose:
+		print("Initial frame fitScale=%s, x_scaled=%s, x=%s"%(fitScale, xscaled,  AGM.reportMinimizerValue(x, x_zero)))
+		#print("Fit for k=%d x=%s xscaled=%s fit initial=%.2e after=%.2e ratio = %.3f"%(k, x, xscaled, fitval_init, fitval_loss, fitval_loss/fitval_init))
+		#plt.plot(losses)
+	ff_first = np.tensordot(xscaled, basisVec[:firstFitSize], axes=[0,0])
+	ff_first = softplus(ff_first)
+	b_first = b0
+	EXT = np.log(ff_first / b_first)
+	if ARG.report_first_extinction is not None:
+		DEN.writeFrame(ARG.report_first_extinction, 0, EXT, force=True)
 
 with tf.device('/cpu:0'):
 	ff_prev = None
 	b_prev = None
 	for k in np.arange(frameCount):
+		start_time_k = time.time()
 		b = DEN.getFrame(ARG.inputImg, k)
 		b = softplus(b)
 		#AGM = AlphaGammaMinimizer(b, basisVec, fitScale, alpha, gamma, weight_l1=0.25, weight_tv=1, dtype=tf.float32)
 		#AGM = AlphaGammaMinimizer(b, basisVec, fitScale, alpha, gamma, weight_l1=1, weight_tv=500, dtype=tf.float32)
-		if b_prev is not None:
+		if b_first is not None:
+			AGM = AlphaGammaConsecutiveMinimizer(b, basisVec, ff_first, b_first, initScale=fitScale, alpha=alpha, gamma=gamma, weight_l1=1, weight_tv=0, weight_neg=0, weight_cns_l1=1, weight_cns_tv=0, dtype=tf.float32)
+		elif b_prev is not None:
+			#AGM = AlphaGammaMinimizer(b, basisVec, fitScale, alpha, gamma, weight_l1=1, weight_tv=100, weight_neg=0, dtype=tf.float32)
 			AGM = AlphaGammaConsecutiveMinimizer(b, basisVec, ff_prev, b_prev, initScale=fitScale, alpha=alpha, gamma=gamma, weight_l1=1, weight_tv=0, weight_neg=0, weight_cns_l1=1, weight_cns_tv=0, dtype=tf.float32)
 			#AGM.reportGammaState(x0)
 			#exit()
@@ -677,7 +700,7 @@ with tf.device('/cpu:0'):
 		minimizer = AGM.getMinimizer()
 		fitval_init = minimizer(x_zero).numpy()
 		if ARG.lbfgs:
-			opt = compute_lbfgs(minimizer, x0)
+			opt = compute_lbfgs(minimizer, x0, max_iterations=50, parallel_iterations=5)
 			x = opt.position.numpy().astype(np.float32)
 			if not opt.converged:
 				print("ERROR: LBFGS optimization did not converge")
@@ -693,7 +716,7 @@ with tf.device('/cpu:0'):
 		fitval_loss = minimizer(x).numpy()
 		xscaled = fitScale * x
 		if ARG.verbose:
-			print("Frame k=%d, fitScale=%s, x_scaled=%s, x=%s"%(k, fitScale, xscaled,  AGM.reportMinimizerValue(x, x_zero)))
+			print("Frame k=%d, fitScale=%s, x_scaled=%s, x=%s"%(k, fitScale, xscaled,  AGM.reportMinimizerValue(x, x_zero)), flush=True)
 			#print("Fit for k=%d x=%s xscaled=%s fit initial=%.2e after=%.2e ratio = %.3f"%(k, x, xscaled, fitval_init, fitval_loss, fitval_loss/fitval_init))
 			#plt.plot(losses)
 		ff_prev = np.tensordot(xscaled, basisVec, axes=[0,0])
@@ -709,3 +732,5 @@ with tf.device('/cpu:0'):
 		if ARG.report_extinction is not None:
 			ext = np.log(ff_prev / b_prev)
 			DEN.writeFrame(ARG.report_extinction, k, ext, force=True)
+		end_time_k = time.time()
+		report_time(start_time, start_time_k, end_time_k, k, frameCount)

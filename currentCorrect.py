@@ -53,6 +53,7 @@ parser.add_argument("--savefig",
                     type=str,
                     help="Create figure from those data and save it as...",
                     default=None)
+parser.add_argument("--fix-corrupted-h5", action="store_true", help="Fix corrupted HDF5 file by scanning for TIFF files.")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--force", action="store_true")
 
@@ -142,7 +143,17 @@ def currentCorrect(ARG):
 if ARG.verbose:
 	print("Start currentCorrect.py h5=%s" % (ARG.h5file))
 
-info = currentCorrect(ARG)
+try:
+	info = currentCorrect(ARG)
+except Exception as e:
+	if ARG.fix_corrupted_h5:
+		#Copy ARG.inputDen to ARG.outputDen
+		print(colored("Error in currentCorrect.py fixing by movind %s to %s, do not write log images." % (ARG.inputDen, ARG.outputDen), "red"))
+		os.system("mv %s %s" % (ARG.inputDen, ARG.outputDen))
+		sys.exit(1)
+	else:
+		print(colored("Error in currentCorrect.py try running with --fix-corrupted-h5", "red"))
+		sys.exit(1)
 
 if ARG.savefig is not None:
 	matplotlib.use('Agg')
