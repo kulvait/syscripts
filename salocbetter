@@ -1,0 +1,138 @@
+#!/bin/bash
+
+DEBUG=false
+PRINTONLY=false # Default behavior: Execute the salloc command
+DELAY=false
+DELAYTIME=1
+PATTERN=""
+WD="wd"
+PARTITION="allgpu"
+EXCLUDEWEAKNODES=false
+STRONGNODES=false
+OVERSUBSCRIBE=false
+SLURMARGS=""
+NODES=1
+EXCLUDE=""
+INCLUDE=""
+TIME=20000 # Default allocation time in minutes
+
+usage() {
+    echo "Usage: $0 [-a SLURMARGS] [-d enable debug mode (sets PRINTONLY=true)] [-e EXCLUDE nodes] [-f PARTITION ... defaults to allgpu] [-h help] [-i INCLUDE nodes] [-n NODES ... number of nodes] [-o oversubscribe] [-p PATTERN for directories] [-s allocate strong nodes] [-t DELAYTIME sleep before allocation, disabled by default] [-T TIME in minutes ... default 20000] [-w workingDir default to wd] [-x exclude weak]"
+    echo ""
+    echo "Examples:"
+    echo "  Allocate strong nodes for 2 nodes: $0 -n 2 -T 10000 -s"
+    echo "  Exclude specific nodes: $0 -e max-cmsg007,max-p3ag006 -n 1"
+    echo "  Enable debug mode and print the salloc command: $0 -d -p \"pattern\""
+    exit 1
+}
+
+while getopts "a:de:f:hi:n:op:st:T:w:x" o; do
+    case "${o}" in
+        a)  
+            SLURMARGS=${OPTARG}
+            ;;
+        d)
+            DEBUG=true
+            PRINTONLY=true
+            ;;
+        e)
+            EXCLUDE=${OPTARG}
+            ;;
+        f)
+            PARTITION=${OPTARG}
+            ;;
+        h)
+            usage
+            exit 0
+            ;;
+        i)
+            INCLUDE=${OPTARG}
+            ;;
+        n)
+            NODES=${OPTARG}
+            ;;
+        o)
+            OVERSUBSCRIBE=true
+            ;;
+        p)
+            PATTERN=${OPTARG}
+            ;;
+        s)
+            STRONGNODES=true
+            ;;
+        t)
+            DELAY=true
+            DELAYTIME=${OPTARG}
+            ;;
+        T)
+            TIME=${OPTARG}
+            ;;
+        w)
+            WD=${OPTARG}
+            ;;
+        x)
+            EXCLUDEWEAKNODES=true
+            ;;
+        *)
+            usage
+            exit 0
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# Construct salloc arguments
+ARG="--partition=${PARTITION} --time=${TIME}"
+
+if [ -n "$NODES" ]; then
+    ARG="$ARG --nodes=${NODES}"
+fi
+
+if [ -n "$EXCLUDE" ]; then
+    ARG="$ARG --exclude=${EXCLUDE}"
+fi
+
+if [ -n "$INCLUDE" ]; then
+    ARG="$ARG --nodelist=${INCLUDE}"
+fi
+
+if [ $OVERSUBSCRIBE = true ]; then
+    ARG="$ARG --oversubscribe"
+fi
+
+if [ $EXCLUDEWEAKNODES = true ]; then
+    WEAKNODES=$(listMaxwellNodes -p ${PARTITION} -w)
+    ARG="$ARG --exclude=$WEAKNODES"
+fi
+
+if [ $STRONGNODES = true ]; then
+    STRONGNODES=$(listMaxwellNodes -p ${PARTITION} -A)
+    ARG="$ARG --nodelist=$STRONGNODES"
+fi
+
+# Print debug information if DEBUG is enabled
+if [ $DEBUG = true ]; then
+    echo "Debug Info:"
+    echo "  Partition: ${PARTITION}"
+    echo "  Time: ${TIME} minutes"
+    echo "  Nodes: ${NODES:-default}"
+    echo "  Exclude: ${EXCLUDE:-none}"
+    echo "  Include: ${INCLUDE:-none}"
+    echo "  Pattern: ${PATTERN:-none}"
+    echo "  Strong Nodes: ${STRONGNODES}"
+    echo "  Exclude Weak Nodes: ${EXCLUDEWEAKNODES}"
+    echo "  Oversubscribe: ${OVERSUBSCRIBE}"
+    echo "  SLURMARGS: ${SLURMARGS}"
+fi
+
+# Print salloc command
+echo "Allocating resources using salloc:"
+CMD="salloc ${ARG} ${SLURMARGS}"
+echo $CMD
+
+# Execute or print only
+if [ $PRINTONLY = false ]; then
+    eval $CMD
+else
+    echo "Print-only mode enabled; no allocation performed."
+fi
