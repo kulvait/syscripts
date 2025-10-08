@@ -9,16 +9,17 @@ PARTITION="allgpu"
 EXCLUDEWEAKNODES=false
 STRONGNODES=false
 OVERSUBSCRIBE=false
+NODELIST=""
 SLURMARGS=""
 cd $DIR
 
 
 usage() {
-    echo "Usage: $0 [-a SLURMARGS] [-d DIR ... defaults to PWD] [-f PARTITION ... defaults to allgpu] [-h help] [-o oversubscribe] [-p PATTERN] [-s strong] [-t DELAYTIME sleep before next submit in seconds, disabled by default] [-w workingDir default to wd] [-x exclude weak]" 1>&2
+    echo "Usage: $0 [-a SLURMARGS] [-d DIR ... defaults to PWD] [-f PARTITION ... defaults to allgpu] [-h help] [-n nodelist] [-o oversubscribe] [-p PATTERN] [-s strong] [-t DELAYTIME sleep before next submit in seconds, disabled by default] [-w workingDir default to wd] [-x exclude weak]" 1>&2
     exit 1
 }
 
-while getopts "a:d:f:hop:st:w:x" o; do
+while getopts "a:d:f:hn:op:st:w:x" o; do
     case "${o}" in
         a)
             SLURMARGS=${OPTARG}
@@ -33,6 +34,9 @@ while getopts "a:d:f:hop:st:w:x" o; do
             usage
             exit 0
             ;;
+		n)
+	    	NODELIST=${OPTARG}
+	    	;;
         o)
             OVERSUBSCRIBE=true
             ;;
@@ -68,7 +72,7 @@ SCRIPTNAME=$(basename $SCRIPT)
 SCRIPTNAME=${SCRIPTNAME%.*}
 
 
-CMD="find ${WD} -mindepth 1 -maxdepth 1 -type d" 
+CMD="find ${WD} -mindepth 1 -maxdepth 1 \( -type d -o -type l \)" 
 if [ -n "$PATTERN" ]; then
 	CMD="$CMD -iregex '.*$PATTERN.*'"
 fi
@@ -92,10 +96,19 @@ if [ $EXCLUDEWEAKNODES = true ]; then
 	ARG="$ARG --exclude=$WEAKNODES"
 fi
 
+# Set --nodelist either explicitly or by using --strong by querying the list of strong nodes
+if [ -n "$NODELIST" ] && [ $STRONGNODES = true ]; then
+	echo "You cannot use --nodelist and --strong at the same time"
+	exit 1
+fi
+if [ -n "$NODELIST" ]; then
+	ARG="$ARG --nodelist=$NODELIST"
+fi
 if [ $STRONGNODES = true ]; then
 	STRONGNODES=$(listMaxwellNodes -p ${PARTITION} -s)
 	ARG="$ARG --nodelist=$STRONGNODES"
 fi
+
 if [[ $OVERSUBSCRIBE = true ]]; then
 	ARG="$ARG --oversubscribe"
 fi

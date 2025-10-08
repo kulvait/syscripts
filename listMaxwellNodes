@@ -6,10 +6,12 @@
 WEAKNODES="max-p3ag[005-031],max-wng[004-007],max-exflg[007-024]"
 STRONGNODES="max-hzgg002,max-cdcsg001,max-cssbg[011-023],max-mpag[001-003,008-013],max-uhhg[001-013],max-wng024,max-wng[037-042,052-053,060-062]"
 STRONGNODES="$STRONGNODES,max-m001,max-m002,max-wn[130-137],max-wn[023-164],max-hzgg[005-006]"
+ANODES="max-cdcsg001,max-cfelg[008-011],max-cmsg011,max-cssbg[011-023],max-exflg[025-027],max-exflg[032-035],max-mpag[001-013],max-p3ag[032-035],max-wng[043-067]"
 
 ALL=true
 STRONG=false
 WEAK=false
+A100=false
 PARTITION="allgpu"
 IDLEONLY=false
 
@@ -18,12 +20,13 @@ function usage {
 	echo "	-s		Strong nodes"
 	echo "	-w		Weak nodes"
 	echo "	-a		All nodes"
+	echo "	-A		A100 nodes"
 	echo "	-i		Idle nodes"
 	echo "	-p PARTITION	Partition to use"
 	echo "	-h		Show this help"
 }
 
-while getopts "swahip:" opt; do
+while getopts "swaAhip:" opt; do
   case $opt in
     i)
 		IDLEONLY=true
@@ -45,6 +48,12 @@ while getopts "swahip:" opt; do
 		ALL=true
 		WEAK=false
 		STRONG=false
+		;;
+    A)
+		ALL=false
+		WEAK=false
+		STRONG=false
+		A100=true
 		;;
 	h)
 		usage
@@ -165,6 +174,8 @@ else
 		GROUPLIST=$(extract_groups $STRONGNODES)
 	elif [ "$WEAK" = true ]; then
 		GROUPLIST=$(extract_groups $WEAKNODES)
+	elif [ "$A100" = true ]; then
+		GROUPLIST=$(extract_groups $ANODES)
 	fi
 	NODEARRAY=()
 	for GROUP in $GROUPLIST; do

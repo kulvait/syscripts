@@ -45,13 +45,15 @@ parser.add_argument("--bin-y",
                     default=1,
                     help="Y dimension of binning box, pixel size will be multiplied by this factor and default detector size is adjusted accordingly.")
 parser.add_argument("--input-file", default=None, help="DEN file with projections to create corresponding projection matrices, if there is not detector size information, nor input file specified, dimensions of the camera from h5 file are used instead.")
-parser.add_argument("--material-ct-convention", action="store_true", default=True, help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
+parser.add_argument("--material-ct-convention", action="store_true", help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
 parser.add_argument("--flat-matrices", help="Create 1D projection matrices.", action="store_true")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--petra-compatibility-transform", action="store_true", help="Make geometry compatible with that used by JM in his reconstruction scripts")
 parser.add_argument("--log-file", default=None, help="Output to log file insted of stdout")
 parser.add_argument("--override-magnification", default=None)
 parser.add_argument("--fix-corrupted-h5", action="store_true", help="Fix corrupted HDF5 file by scanning for TIFF files, provide --input-file.")
+parser.add_argument("--ignore-pixel-shifts", action="store_true", help="Ignore pixel shifts as they appear in h5 file")
+parser.add_argument("--ignore-exact-angles", action="store_true", help="Ignore exact angles as they appear in h5 file")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--write-params-file", action="store_true")
 parser.add_argument('--_json-message', default="Created using KCT script createCameraMatricesForCircularScanTrajectoryParallelRay3D.py", help=argparse.SUPPRESS)
@@ -215,6 +217,21 @@ PY=pixel_sizey
 print("M=%d N=%d PX=%f PY=%f"%(M, N, PX, PY))
 directionAngles = df["s_rot"]
 directionAngles = [degToRad(x) for x in directionAngles]
+
+def is_nondecreasing(seq):
+	return all(x <= y for x, y in zip(seq, seq[1:]))
+
+if ARG.ignore_exact_angles:
+	if is_nondecreasing(directionAngles):
+		angle_count = len(directionAngles)
+		min_angle = directionAngles[0]
+		max_angle = directionAngles[-1]
+		directionAngles = np.linspace(min_angle, max_angle, angle_count)
+		print("Using directionAngles np.linspace(%f, %f, %d)"%(min_angle, max_angle, angle_count))
+	else:
+		raise ValueError("directionAngles is not a nondecreasing sequence")
+
+
 if ARG.petra_compatibility_transform:
 	directionAngles = [JTransform(x) for x in directionAngles]
 
@@ -239,14 +256,14 @@ if ARG.rotation_center_file_fitted_matrix:
 			VY = np.array([0.0, 0.0, -PY], dtype=np.float64)
 			b = np.array([0.0, 0.0, -1.0/PY], dtype=np.float64)
 		detectorCenter=np.array([0.0,0.0,0.0], dtype=np.float64) + (VX/PX) * (-totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size) + (VY/PY) * totalCenterOffsety
-	#	print("Shifting detector center by %f including rotation_center_offset=%f and pixel_size_x=%f"%(totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size, rotation_center_offset/default_pixel_size, pixel_sizex))
 		px0 = N * 0.5 - 0.5 - detectorCenter.dot(a)
 		py0 = M * 0.5 - 0.5 - detectorCenter.dot(b)
 		#Alternative way of computing center of the detector, almost the same results maybe more intuitive
-		if totalCenterOffsety == 0: 
-			#print("Creative projection matrices detectorHalflength_adjustment=%f rotation_center_offset=%f detector_center_offsetvx=%f"%(detector_halflength_adjustment, rotation_center_offset, ARG.detector_center_offsetvx))
-			px0 = N * 0.5 - 0.5 - df["pixel_shift"].iloc[i]/ARG.bin_x + totalCenterOffsetx / pixel_sizex
-			py0 = M * 0.5 - 0.5
+		if ARG.ignore_pixel_shifts:
+			px0 = N * 0.5 - 0.5 + totalCenterOffsetx / PX
+		else:
+			px0 = N * 0.5 - 0.5 + totalCenterOffsetx / PX - df["pixel_shift"].iloc[i]/ARG.bin_x
+		py0 = M * 0.5 - 0.5 + totalCenterOffsety / PY
 		a2 = a.dot(VX)/PX * rotation_center_offset_interpfit_b*ARG.bin_y/PY
 		a = np.array([a[0], a[1], a2], dtype=np.float64)
 		CM = np.array([np.append(a, px0), np.append(b,py0)])
@@ -260,9 +277,13 @@ elif ARG.flat_matrices:
 		VR = rayDirection(theta)
 		VX = np.array([np.cos(theta)*PX, np.sin(theta)*PX, 0.0], dtype=np.float64)
 		a = np.array([np.cos(theta)/PX, np.sin(theta)/PX, 0.0], dtype=np.float64)
-		detectorCenter=np.array([0.0,0.0,0.0], dtype=np.float64) + (VX/PX) * (-totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size)
-	#	print("Shifting detector center by %f including rotation_center_offset=%f and pixel_size_x=%f"%(totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size, rotation_center_offset/default_pixel_size, pixel_sizex))
-		px0 = N * 0.5 - 0.5 - detectorCenter.dot(a)
+		#detectorCenter=np.array([0.0,0.0,0.0], dtype=np.float64) + (VX/PX) * (-totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size)
+		#print("Shifting detector center by %f including rotation_center_offset=%f and pixel_size_x=%f"%(totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size, rotation_center_offset/default_pixel_size, pixel_sizex))
+		#px0 = N * 0.5 - 0.5 - detectorCenter.dot(a)
+		if ARG.ignore_pixel_shifts:
+			px0 = N * 0.5 - 0.5 + totalCenterOffsetx / PX
+		else:
+			px0 = N * 0.5 - 0.5 + totalCenterOffsetx / PX - df["pixel_shift"].iloc[i]/ARG.bin_x
 		CM = np.array([np.append(a, px0)])
 		CM.shape=(1,1,4)
 		CameraMatrices = np.concatenate((CameraMatrices, CM))
@@ -278,18 +299,18 @@ else:
 			VY = np.array([0.0, 0.0, PY], dtype=np.float64)
 			b = np.array([0.0, 0.0, 1.0/PY], dtype=np.float64)
 		else:
+			VX = np.array([np.cos(theta)*PX, -np.sin(theta)*PX, 0.0], dtype=np.float64)
+			a = np.array([np.cos(theta)/PX, -np.sin(theta)/PX, 0.0], dtype=np.float64)
 			VY = np.array([0.0, 0.0, -PY], dtype=np.float64)
 			b = np.array([0.0, 0.0, -1.0/PY], dtype=np.float64)
-		detectorCenter=np.array([0.0,0.0,0.0], dtype=np.float64) + (VX/PX) * (-totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size) + (VY/PY) * totalCenterOffsety
-	#	print("Shifting detector center by %f including rotation_center_offset=%f and pixel_size_x=%f"%(totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size, rotation_center_offset/default_pixel_size, pixel_sizex))
-		px0 = N * 0.5 - 0.5 - detectorCenter.dot(a)
-		py0 = M * 0.5 - 0.5 - detectorCenter.dot(b)
-#DEBUG CODE
-		px0 = px0 + 0.0
-		#detectorCenter=np.array([0.0,0.0,0.0], dtype=np.float64) + (VX/PX) * (-totalCenterOffsetx ) + (VY/PY) * totalCenterOffsety
-		#px0 = N * 0.5 - 0.5 - detectorCenter.dot(a) + 1.0
+		#detectorCenter=np.array([0.0,0.0,0.0], dtype=np.float64) + (VX/PX) * (-totalCenterOffsetx + df["pixel_shift"].iloc[i]*default_pixel_size) + (VY/PY) * totalCenterOffsety
+		#px0 = N * 0.5 - 0.5 - detectorCenter.dot(a)
 		#py0 = M * 0.5 - 0.5 - detectorCenter.dot(b)
-#END DEBUG CODE
+		if ARG.ignore_pixel_shifts:
+			px0 = N * 0.5 - 0.5 + totalCenterOffsetx / PX
+		else:
+			px0 = N * 0.5 - 0.5 + totalCenterOffsetx / PX - df["pixel_shift"].iloc[i]/ARG.bin_x
+		py0 = M * 0.5 - 0.5 + totalCenterOffsety / PY
 		CM = np.array([np.append(a, px0), np.append(b,py0)])
 		CM.shape=(1,2,4)
 		CameraMatrices = np.concatenate((CameraMatrices, CM))

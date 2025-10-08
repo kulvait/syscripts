@@ -92,8 +92,17 @@ ARG = parser.parse_args()
 if ARG.fourier:
 	from algotom.prep import calculation
 
+# Check if input file exists and handle errors 
+# Check if the path exists at all
+if not os.path.exists(ARG.inputFile):
+	raise IOError("Path %s does not exist" % os.path.abspath(ARG.inputFile))
+# If it exists but is a directory
+if os.path.isdir(ARG.inputFile):
+	raise IOError("Expected a file but got a directory: %s" % os.path.abspath(ARG.inputFile))
+# If it exists and is not a file
 if not os.path.isfile(ARG.inputFile):
-	raise IOError("File %s does not exist" % os.path.abspath(ARG.inputFile))
+	raise IOError("Path %d does not point to a regular file" %
+				  os.path.abspath(ARG.inputFile))
 
 if ARG.input_tick is None and ARG.input_h5 is None and ARG.input_linspace is False:
 	raise IOError("There is no tick file nor h5 file specified!")
@@ -368,7 +377,7 @@ if ARG.load_sinograms is not None:
 		if abs(maxshift-maxintshift) > 0.01 :
 			sinogram_center_offset = 0.5*(maxintshift - maxshift)
 elif ARG.center_implementation:
-	sinograms = np.zeros([ARG.sample_count, ARG.angle_count, xdim],
+	sinograms = np.zeros([ARG.sample_count, len(angleSequence), xdim_reduced],
 					 dtype=np.float32)
 	maxshift = pixShifts.max()
 	minshift = pixShifts.min()
@@ -393,7 +402,7 @@ else:
 	maxshift = pixShifts.max()
 	maxintshift = int(maxshift + 0.99)
 	xdim_reduced = xdim - maxintshift
-	sinograms = np.zeros([ARG.sample_count, ARG.angle_count, xdim_reduced],
+	sinograms = np.zeros([ARG.sample_count, len(angleSequence), xdim_reduced],
 					 dtype=np.float32)
 	if maxintshift >= xdim:
 		raise ValueError("maxintshift >= xdim %d >=%d"%(maxintshift, xdim))
@@ -885,10 +894,31 @@ for j in range(len(ySequence)):
 	fittable[j, 2] = (offsets[j]+sinogram_center_offset) * pix_size
 	fittable[j, 3] = interpoffsets[j]
 	fittable[j, 4] = (interpoffsets[j]+sinogram_center_offset) * pix_size
-#Remove outliers
-stdoffset = interpoffsets.std()
-stdmedian = np.nanmedian(interpoffsets)
-fittable = fittable[np.abs(fittable[:,3]-stdmedian)< 2*stdoffset]
+
+# Calculate the Median Absolute Deviation (MAD)
+def mad(data):
+	median = np.nanmedian(data)
+	mad_value = np.nanmedian(np.abs(data - median))
+	return mad_value
+
+#Compute global R2 as a metric of quality of the method before filtering
+b, a = np.polyfit(fittable[:,0], fittable[:,3], 1)
+predicted_offsets = a + b*fittable[:,0]
+mae = np.mean(np.abs(fittable[:,3]-predicted_offsets))
+ss_res = np.sum((fittable[:,3]-predicted_offsets)**2)
+ss_tot = np.sum((fittable[:,3]-np.mean(fittable[:,3]))**2)
+r2 = 1 - ss_res/ss_tot
+print("global_mae=%s"%(mae))
+print("global_r2=%s"%(r2))
+
+
+# Compute MAD for interpoffsets
+mad_interpoffsets = mad(interpoffsets)
+# Use MAD to filter outliers
+median_interpoffsets = np.nanmedian(interpoffsets)
+# Here we use MAD to define a threshold for outliers
+threshold = 2 * mad_interpoffsets
+fittable = fittable[np.abs(fittable[:, 3] - median_interpoffsets) < threshold]
 
 num_outliers_rejected = len(ySequence) - len(fittable)
 

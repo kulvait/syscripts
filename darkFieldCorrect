@@ -47,8 +47,10 @@ function adjustImgValues(){
     dentk-framecalc1 --force --median ${DARK}.den ${DARK}_med
     dentk-framecalc ${ARG} --subtract ${IMG}.den ${DARK}_med ${IMG}_sub
     dentk-framecalc ${ARG} --subtract ${FLAT}.den ${DARK}_med ${FLAT}_sub
-    dentk-calc1 ${ARG} --max ${MINIMG} ${IMG}_sub ${IMGCOR}.den
-    dentk-calc1 ${ARG} --max ${MINFLAT} ${FLAT}_sub ${FLATCOR}.den
+	dentk-calc1 ${ARG} --double-softplus ${IMG}_sub ${IMGCOR}.den
+	dentk-calc1 ${ARG} --double-softplus  ${FLAT}_sub ${FLATCOR}.den
+    #dentk-calc1 ${ARG} --max ${MINIMG} ${IMG}_sub ${IMGCOR}.den
+    #dentk-calc1 ${ARG} --max ${MINFLAT} ${FLAT}_sub ${FLATCOR}.den
     rm -f ${DARK}_med
 	rm -f ${IMG}_sub
 	rm -f ${FLAT}_sub
@@ -70,3 +72,5 @@ else
 	echo "Starting dark field correction wiht DAR=${DARK} FLAT=${FLAT} IMG=${IMG} to produce FLATCOR=${FLATCOR} and IMGCOR=${IMGCOR}"
 	adjustImgValues ${DARK} ${FLAT} ${IMG} ${FLATCOR} ${IMGCOR}
 fi
+
+

@@ -79,7 +79,7 @@ def getInfo(directory):
 		return {}
 	h5files = glob.glob(os.path.join(directory, "*.h5"))
 	if len(h5files) != 1:
-		print("Excluding directory %s because there is %d h5 files." %
+		print("\nExcluding directory %s because there is %d h5 files." %
 			  (directory, len(h5files)))
 		return {}
 	h5 = h5files[0]
@@ -92,12 +92,12 @@ def getInfo(directory):
 		for f in scanData["image_file"]:
 			f = f.lstrip("/")
 			if not os.path.exists(os.path.join(directory, f)):
-				print("Excluding directory %s as file %s does not exist." %
+				print("\nExcluding directory %s as file %s does not exist." %
 					  (directory, os.path.join(directory, f)))
 				return {}
 		return out
 	except Exception as e:
-		print("Excluding directory %s because there was error parsing h5 file %s. \nException: %s"
+		print("\nExcluding directory %s because there was error parsing h5 file %s. \nException: %s"
 			  % (directory, h5, traceback.format_exc()))
 		return {}
 

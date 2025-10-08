@@ -27,11 +27,12 @@ import scipy
 from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 from scipy.signal import convolve2d
 from numpy.fft import fft, ifft
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-log = logging.getLogger(__name__)
+log = logging.getLogger("detectRotationCenterNew")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
@@ -83,6 +84,12 @@ parser.add_argument(
 	help=
 	"Search for the offcet with maximum consistency so that f(x)-f(x+pi) is optimal."
 )
+parser.add_argument(
+	"--savefig",
+	type=str,
+	help="Path to a PDF file where diagnostic figures (e.g., minimizer curve, sinogram) will be saved.",
+	default=None
+)
 
 def floatOneFraction(arg):
 	try:
@@ -113,6 +120,7 @@ parser.add_argument("--log-file",
 					help="Output to log file insted of stdout")
 ARG = parser.parse_args()
 
+pdf = PdfPages(ARG.savefig) if ARG.savefig is not None else None
 
 if not os.path.isfile(ARG.inputFile):
 	raise IOError("File %s does not exist" % os.path.abspath(ARG.inputFile))
@@ -669,7 +677,10 @@ def estimateTrigonometricFit180(sin_orig, shiftEstimate_old=0, iterations=20):
 										   iterations - 1)
 
 
-def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20):
+def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20, enforcePositivity=True):
+	if enforcePositivity:
+		#Enforce positivity of the sinogram
+		sin_orig = np.maximum(sin_orig, 0.0).copy()
 	if shiftEstimate_old == 0:
 		sin = sin_orig
 	else:
@@ -677,8 +688,13 @@ def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20):
 	xdim = sin.shape[1]
 	ydim = sin.shape[0]
 	sin_mass = sin.sum(axis=1)
-	sin_mass = np.maximum(sin_mass, 1e-10)	#Avoid zero division
-	xcoord = 0.5 + np.arange(xdim)
+	num_low_mass = np.sum(sin_mass < 1e-10)
+	if num_low_mass > 0:
+		log.info(f"{num_low_mass} sinogram lines have near-zero mass and may be unreliable in {iterations} to go with shiftEstimate_old={shiftEstimate_old}.")
+	sin_mass = np.maximum(sin_mass, 1e-10) #Avoid zero division
+	center_x = xdim * 0.5 - 0.5
+	#Center coordinates at center of the sinogram
+	xcoord = np.arange(xdim) - center_x
 	coa = sin.dot(xcoord) / sin_mass
 	angles = np.linspace(0, 2 * np.pi, num=ydim, endpoint=False)
 	A = np.zeros([ydim, 3])
@@ -693,7 +709,7 @@ def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20):
 			"Error in estimateTrigonometricFit when processing sin_orig with shiftEstimate_old=%d iterations=%s coefs=(%s, %s, %s)"
 			% (shiftEstimate_old, iterations, coefs[0], coefs[1], coefs[2]))
 		return None
-	shiftEstimate = coefs[0] - 0.5 * xdim
+	shiftEstimate = coefs[0]
 	#plt.plot(angles, coa, label="Original")
 	#plt.plot(angles, A.dot(coefs[0]), label="Fitted")
 	#plt.show()
@@ -702,7 +718,7 @@ def estimateTrigonometricFit360(sin_orig, shiftEstimate_old=0, iterations=20):
 		return shiftEstimate
 	else:
 		return estimateTrigonometricFit360(sin_orig, shiftEstimate,
-										   iterations - 1)
+										   iterations - 1, False)
 
 
 offsets = np.zeros(len(ySequence))
@@ -755,6 +771,7 @@ for j in jrange:
 	offset_smooth180[j] = estimateSmoothFit(sa)
 	if init_offset_sharpness <= 0.0:
 		init_offset = offset_trig360[j]
+		log.info(f"init_offset set to {init_offset} for j={j} y={ySequence[j]}")
 #	print(
 #		"For j=%d y=%d the center of symmetry offset trig160=%f trig360=%f smooth180=%f init_offset=%f"
 #		% (j, ySequence[j], offset_trig180[j], offset_trig360[j],
@@ -767,24 +784,47 @@ for j in jrange:
 				  (j, ySequence[j], offsets[j]))
 			print("")
 	elif ARG.sinogram_consistency:
-		(ESTIMATE_OFFSET, ESTIMATE_INTERP, convergingSequence, minimizerValue, peakSharpnessGlobal, peakSharpnessLocal) = COR.sinogram_consistency_detection360(sinogram, init_offset, nrmord=0, search_diameter=ARG.search_diameter, balanced=True, verbose=ARG.verbose)
+		(ESTIMATE_OFFSET, ESTIMATE_INTERP, convergingSequence, minimizerValue, peakSharpnessGlobal, peakSharpnessLocal, minimizerInds, minimizerValues) = COR.sinogram_consistency_detection360(sinogram, init_offset, nrmord=0, search_diameter=ARG.search_diameter, balanced=True, verbose=ARG.verbose)
 		offsets[j] = ESTIMATE_OFFSET
 		interpoffsets[j] = ESTIMATE_INTERP
 		peak_sharpness[j] = peakSharpnessGlobal
 		if peak_sharpness[j] > init_offset_sharpness:
 			init_offset_sharpness = peak_sharpness[j]
 			init_offset = ESTIMATE_INTERP
-		if ARG.verbose:
-			plt.imshow(sinogram,
+			log.info(f"init_offset set to {init_offset} for j={j} y={ySequence[j]} based on peak_sharpness {peak_sharpness[j]}")
+		if ARG.verbose or ARG.savefig:
+			fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+			# Plot 1: sinogram with COR line
+			ax = axes[0]
+			ax.imshow(sinogram,
 					   cmap="gray",
 					   vmin=np.quantile(sinogram, 0.2),
 					   vmax=np.quantile(sinogram, 0.9))
+			ax.axvline(x=0.5 * xdim - 0.5 + ESTIMATE_INTERP, color="red", linewidth=2)
+			ax.set_title("Sinogram y=%d/%d offset=%0.2f offset_interp=%0.2f COR=%0.1f" %
+						 (ySequence[j], ydim, ESTIMATE_OFFSET, ESTIMATE_INTERP,
+						  0.5 * xdim - 0.5 + ESTIMATE_INTERP))
+			# Plot 2: minimizer curve
+			ax = axes[1]
+			ax.plot(0.5 * minimizerInds, minimizerValues, label="Minimizer curve")
+			ax.axvline(x=0.5 * xdim - 0.5 + ESTIMATE_INTERP, color="red", linewidth=1, label="Spline COR estimate")
+			ax.axvline(x=0.5 * xdim - 0.5 + ESTIMATE_OFFSET, color="blue", linewidth=1, label="Discrete COR estimate")
+			#Reflect library code
+			ax.set_title("Unbinned offset estimate interpolation %.2f in red." % interpoffsets[j])
+			ax.set_xlabel("Shift offset")
+			ax.set_ylabel("Minimizer value")
+			#Set major ticks every 2 units and minor ticks every 1 unit
+			#This ensures clean grid alignment for offset visualization
+			ax.xaxis.set_major_locator(plt.MultipleLocator(2))
+			ax.xaxis.set_minor_locator(plt.MultipleLocator(1))
+			ax.set_xlim(interpoffsets[j] - 10, interpoffsets[j] + 10)
+			ax.legend()
 			plt.tight_layout()
-			plt.title("360 fit x_trg=%f x_fit=%f" %
-					  (0.5 * xdim + offset_trig360[j], 0.5 * xdim + offsets[j]))
-			plt.axvline(x=0.5 * xdim + offset_trig360[j], color="blue", linewidth=3)
-			plt.axvline(x=0.5 * xdim + offsets[j], color="red", linewidth=3)
-			plt.show()
+			if ARG.savefig:
+				pdf.savefig(fig, bbox_inches='tight')
+				plt.close(fig)
+			else:
+				plt.show()
 		print(
 			"j=%d y=%d/%d peakSharpness=%0.1f offsets[j]=%0.2f interpoffset=%0.2f"
 			% (j, ySequence[j], ydim, peak_sharpness[j], offsets[j], interpoffsets[j]))
@@ -839,26 +879,7 @@ for j in jrange:
 				% (j, ySequence[j], ydim, centerOffset + 0.5 * J,
 				   -J - 2 * centerOffset, J, centerOffset))
 
-admissibleOffsets = (peak_sharpness == 0) | (peak_sharpness > 3.5)
-if sum(admissibleOffsets) != 0:
-	offset = np.nanmedian(offsets[admissibleOffsets])
-	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
-else:
-	print("WARNING: NO PEAK SHARPNESS > 3.5, OFFSET MIGHT BE INCORRECT, taking median of five with highest sharpness!")
-	admissibleOffsets = np.argsort(peak_sharpness)[-5:] #Take three highest sharpness indices
-	offset = np.nanmedian(offsets[admissibleOffsets])
-	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
-
-#Formatting as string shall give the full precision
-print("rotation_center_offset_pix=%s" % (offset))
-print("rotation_center_offset_pix_interp=%s" % (interpOffset))
-if ARG.input_tick is None:
-	print("rotation_center_offset=%s" %
-		  ((offset + sinogram_center_offset) * pix_size))
-	print("rotation_center_offset_interp=%s" %
-		  ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
-#Create fit
-#First compute pix size
+#Compute pix size
 pix_size = 1.0
 if ARG.input_tick is None:
 	h5 = h5py.File(ARG.input_h5, 'r')
@@ -876,7 +897,33 @@ if ARG.input_tick is None:
 	else:
 		pix_size_mag = float(h5["entry/hardware/%s/magnification" % cam][0])
 	pix_size = float(pix_size_cam / pix_size_mag)
+
+
+
 print("default_pix_size=%s" % (pix_size))
+admissibleOffsets = (peak_sharpness == 0) | (peak_sharpness > 3.5)
+if sum(admissibleOffsets) == 0:
+	print("WARNING: NO PEAK SHARPNESS > 3.5, OFFSET MIGHT BE INCORRECT, taking median of five with highest sharpness!")
+	admissibleOffsets = np.argsort(peak_sharpness)[-5:] #Take five highest sharpness indices
+	offset = np.nanmedian(offsets[admissibleOffsets])
+	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
+elif sum(admissibleOffsets) < 3:
+	admissibleOffsets = np.argsort(peak_sharpness)[-3:] #Take three highest sharpness indices
+	offset = np.nanmedian(offsets[admissibleOffsets])
+	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
+else:
+	offset = np.nanmedian(offsets[admissibleOffsets])
+	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
+
+#Formatting as string shall give the full precision
+print("rotation_center_offset_pix=%s" % (offset))
+print("rotation_center_offset_pix_interp=%s" % (interpOffset))
+if ARG.input_tick is None:
+	print("rotation_center_offset=%s" %
+		  ((offset + sinogram_center_offset) * pix_size))
+	print("rotation_center_offset_interp=%s" %
+		  ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
+#Create fit
 
 fittable = np.zeros([0, 5])
 for j in range(len(ySequence)):
@@ -889,11 +936,27 @@ for j in range(len(ySequence)):
 	fittable = np.vstack([fittable, fitrow])
 #	if peak_sharpness[j] == 0 or peak_sharpness[j] > 3.5:
 
+b, a = np.polyfit(fittable[:,0], fittable[:,3], 1)
+predicted_offsets = a + b*fittable[:,0]
+mae = np.mean(np.abs(fittable[:,3]-predicted_offsets))
+ss_res = np.sum((fittable[:,3]-predicted_offsets)**2)
+ss_tot = np.sum((fittable[:,3]-np.mean(fittable[:,3]))**2)
+r2 = 1 - ss_res/ss_tot
+print("global_mae=%s"%(mae))
+print("global_r2=%s"%(r2))
+
 fittable = fittable[admissibleOffsets]
 
-stdoffset = offsets.std()
-stdmedian = np.nanmedian(offsets)
-fittable = fittable[np.abs(fittable[:, 1] - stdmedian) < 2 * stdoffset]
+#Filter based on pixel offsets within 2 standard deviations if pix_size is not zero
+if pix_size != 0:
+	stdpixoffset = np.fmax(fittable[:, 2].std(), 1e-3) #Avoid zero standard deviation which might lead to rejection of everything
+	stdpixmedian = np.nanmedian(fittable[:, 2])
+	fittable = fittable[np.abs(fittable[:, 2] - stdpixmedian) <= 2 * stdpixoffset]
+else:
+	stdoffset = np.fmax(fittable[:, 1].std(), 1e-3) #Avoid zero standard deviation which might lead to rejection of everything
+	stdmedian = np.nanmedian(fittable[:, 1])
+	fittable = fittable[np.abs(fittable[:, 1] - stdmedian) <= 2 * stdoffset]
+
 if fittable.shape[0] > 3:
 	b, a = np.polyfit(fittable[:, 0], fittable[:, 1], 1)
 	#It is offset = a + b*y
@@ -936,3 +999,6 @@ if ARG.input_tick is not None:
 else:
 	print("END detectRotationCenter.py for extinctions %s and H5 file %s" %
 		  (os.path.abspath(ARG.inputFile), os.path.abspath(ARG.input_h5)))
+if pdf is not None:
+	pdf.close()
+	print("Saved plots to %s" % (ARG.savefig))
