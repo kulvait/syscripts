@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Created 2023
+2023-2005
 
 @author: Vojtech Kulvait
 
@@ -9,6 +9,7 @@ This scripts creates soft links in the directory structure
 """
 import argparse
 import glob
+import io
 import os
 import sys
 import shutil
@@ -83,6 +84,9 @@ def getInfo(directory):
 			  (directory, len(h5files)))
 		return {}
 	h5 = h5files[0]
+	log_buffer = io.StringIO()
+	old_stdout = sys.stdout
+	sys.stdout = log_buffer
 	try:
 		out = {}
 		scanData = PETRA.scanDataset(h5, includeCurrent=False)
@@ -100,6 +104,10 @@ def getInfo(directory):
 		print("\nExcluding directory %s because there was error parsing h5 file %s. \nException: %s"
 			  % (directory, h5, traceback.format_exc()))
 		return {}
+	finally:
+		sys.stdout = old_stdout
+		out["log"] = log_buffer.getvalue()
+		log_buffer.close()
 
 processed_dir = ARG.processed_dir
 if processed_dir is None:
@@ -222,15 +230,23 @@ for d in subDirs:
 			os.symlink(params["h5"], os.path.join(workdir, "h5"))
 			os.symlink(params["raw"], os.path.join(workdir, "raw"))
 			UTILS.writeParamsFile(params, os.path.join(workdir, "params"))
+			#Finally write any log in info["log"]
+			if "log" in info and len(info["log"]) > 0:
+				os.makedirs(os.path.join(workdir, "log"), exist_ok=True)
+				with open(os.path.join(workdir, "log", "createWorkingDirectory.log"), "w") as logf:
+					logf.write(info["log"])
+				lines = info["log"].strip().split("\n")
+				last_line = lines[-1]
+				print("%d log lines captured, see log/createWorkingDirectory.log. Last line: %s" % (len(lines), last_line))
 		
 		# Increment processed count
 		processed_count += 1
-		print("Successfully processed file %s in %s" % (info["h5"], info["rawdir"]))
+		print("Successfully processed file %s in %s" % (info["h5"], info["rawdir"]), flush=True)
 	except Exception as e:
 		# Log error with line number
 		import traceback
 		tb = traceback.format_exc()
-		print("Error processing file %s in %s: %s\n%s" % (info.get("h5", "unknown"), info.get("rawdir", "unknown"), str(e), tb))
+		print("Error processing file %s in %s: %s\n%s" % (info.get("h5", "unknown"), info.get("rawdir", "unknown"), str(e), tb), flush=True)
 
 # Summary of processing
 print("Total successfully processed subdirectories:", processed_count)
