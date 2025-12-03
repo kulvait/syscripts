@@ -159,12 +159,18 @@ if ARG.input_file is not None:
 
 #Now we compute if there is some offset e.g. due to the binning and correct for it
 #We expect that top left corner of the detector matches top left of the camera
+expected_binned_sizex = default_detector_sizex // ARG.bin_x
+binning_center_adjustment = 0.0
+if default_detector_sizex % ARG.bin_x != 0:
+	binning_center_adjustment = (float(default_detector_sizex % ARG.bin_x)*0.5)*default_pixel_size
+	if default_detector_sizex//ARG.bin_x >= detector_sizex:
+		print("Binning center adjustment due to binning in x by %d is %f"%(ARG.bin_x, binning_center_adjustment))
 
-default_detector_halflength = (default_detector_sizex*0.5)*default_pixel_size
-detector_halflength = (float(detector_sizex)*0.5)*pixel_sizex
-detector_halflength_adjustment = detector_halflength - default_detector_halflength
-if np.abs(detector_halflength_adjustment)/default_pixel_size > 0.01:
-	print(colored("Halflenght adjustment due to detector_halflength=%f and default_detector_halflength=%f does not match, they are %f of default_pixel_size, can be due to error!"%(detector_halflength, default_detector_halflength, detector_halflength_adjustment/default_pixel_size), "red"))
+if detector_sizex < expected_binned_sizex:
+	print(colored("Warning: detector_sizex=%d < expected_binned_sizex=%d, any crop shall be symmetric or adequate ARG.detector_center_offsetvx needs to be specified!"%(detector_sizex, expected_binned_sizex), "yellow"))
+elif detector_sizex > expected_binned_sizex:
+	print(colored("Warning: detector_sizex=%d > expected_binned_sizex=%d, can be due to error!"%(detector_sizex, expected_binned_sizex), "red"))
+	raise ValueError("detector_sizex=%d is larger than expected_binned_sizex=%d, can be due to error!"%(detector_sizex, expected_binned_sizex))
 
 rotation_center_offset = ARG.rotation_center_offset
 rotation_center_offset_interpfit_a = None
@@ -191,7 +197,7 @@ if ARG.rotation_center_file is not None:
 
 print("rotation_center_offset=%f rotation_center_offset_pix=%f"%(rotation_center_offset, rotation_center_offset/pixel_sizex))
 
-totalCenterOffsetx = detector_halflength_adjustment + rotation_center_offset + ARG.detector_center_offsetvx
+totalCenterOffsetx = binning_center_adjustment + rotation_center_offset + ARG.detector_center_offsetvx
 totalCenterOffsety = ARG.detector_center_offsetvy
 
 print("totalCenterOffsetx=%f rotation_center_offset=%f ARG.detector_center_offsetvx=%f"%(totalCenterOffsetx, rotation_center_offset,  ARG.detector_center_offsetvx))
