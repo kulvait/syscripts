@@ -26,6 +26,10 @@ import scipy
 from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
 import scipy.stats as stats
+from pathlib import Path
+from skimage.registration import phase_cross_correlation
+import zarr
+import shutil
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
@@ -54,7 +58,7 @@ parser.add_argument(
 parser.add_argument("--store-sinograms",
 					default=None,
 					type=str,
-					help="Use to store sinograms to the DEN file.")
+					help="Use to store sinograms to the DEN/Zarr file.")
 parser.add_argument("--load-sinograms",
 					default=None,
 					type=str,
@@ -124,6 +128,50 @@ if ARG.log_file:
 	sys.stdout.flush()
 	sys.stdout = open("%s_tmp" % ARG.log_file, "wt")
 
+#Compute pix size
+pix_size = 1.0
+if ARG.input_tick is None:
+	h5 = h5py.File(ARG.input_h5, 'r')
+	if "/entry/hardware/camera1" in h5:
+		cam = "camera1"
+	elif "/entry/hardware/camera" in h5:
+		cam = "camera"
+	else:
+		raise ValueError(
+			"There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."
+			% info["h5"])
+	pix_size_cam = float(h5["entry/hardware/%s/pixelsize" % cam][0])
+	if ARG.override_magnification is not None:
+		pix_size_mag = ARG.override_magnification
+	else:
+		pix_size_mag = float(h5["entry/hardware/%s/magnification" % cam][0])
+	pix_size = float(pix_size_cam / pix_size_mag)
+print("default_pix_size=%s"%(pix_size))
+
+
+def correlation2d_estimate_COR(proj0: np.ndarray, proj180: np.ndarray) -> float:
+	"""
+	Estimate COR using 2D correlation between projections 180 degrees apart.
+	proj0	   : 2D array	projection at angle θ		 (H, W)
+	proj180    : 2D array	projection at angle θ+180°	 (H, W)
+	"""
+	# Flip the 180° projection horizontally
+	proj180_flipped = np.fliplr(proj180)
+	# Compute 2D subpixel shift between the two projections
+	shift, _, _ = phase_cross_correlation(
+		proj0, 
+		proj180_flipped, 
+		upsample_factor=20	# higher gives better subpixel precision
+	)
+	dx = shift[1]	 # horizontal shift only
+	# COR shift is half the projection misalignment
+	center_offset = dx / 2.0
+	W = proj0.shape[1]
+	detector_center = 0.5 * (W - 1)
+	COR = detector_center + center_offset
+	return COR
+ 
+
 def shiftFrame(x, shiftSize):
 	if shiftSize == 0:
 		return x
@@ -137,10 +185,11 @@ def shiftFrame(x, shiftSize):
 #Shift by float shift size
 def shiftAndReduceFrameFloat(f, shiftSize, xdim_reduced):
 	shiftSizeInt = int(shiftSize + 0.5)
-	if abs(shiftSizeInt - shiftSize) < 0.01:
+	if abs(shiftSizeInt - shiftSize) < 0.05:
 		#Just integer shift
 		return reduceFrame(f, shiftSizeInt, xdim_reduced)
 	else:
+		print("Shifting and reducing frame f of shape %s by float shiftSize=%f to xdim_reduced=%d"%(f.shape, shiftSize, xdim_reduced))
 		intShift = math.floor(shiftSize)
 		floatShift = shiftSize - intShift
 		intShift = int(intShift)
@@ -149,8 +198,34 @@ def shiftAndReduceFrameFloat(f, shiftSize, xdim_reduced):
 		return (1.0 - floatShift) * f1 + floatShift*f2
 
 def reduceFrame(f, intShift, xdim_reduced):
-	offset = f.shape[1]-xdim_reduced-intShift
-	return f[:,offset:(offset+xdim_reduced)]
+	"""
+	Reduce the frame by slicing out a sub-region with a given shift and reduced size.
+	If the slice exceeds the bounds, pad the frame with zeros to maintain the shape.
+	
+	Args:
+		f (np.ndarray): The input frame.
+		intShift (int): The integer shift value.
+		xdim_reduced (int): The reduced size (number of columns) to extract.
+		
+	Returns:
+		np.ndarray: The reduced frame with the specified number of columns.
+	"""
+	offset = f.shape[1] - xdim_reduced - intShift
+	# Check if the slice exceeds the bounds of the frame
+	if offset < 0 or offset + xdim_reduced > f.shape[1]:
+		# If so, pad with zeros to make sure we don't go out of bounds
+		print(f"Warning: Offset {offset} and reduced width {xdim_reduced} exceeds frame width {f.shape[1]}. Padding with zeros.")
+		# Initialize a zero frame of the required dimensions (xdim_reduced, f.shape[0])
+		padded_frame = np.zeros((f.shape[0], xdim_reduced))
+		# Determine the actual slice range based on the frame width
+		valid_start = max(0, offset)
+		valid_end = min(f.shape[1], offset + xdim_reduced)
+		# Copy the valid part from f to the padded_frame
+		padded_frame[:, :valid_end - valid_start] = f[:, valid_start:valid_end]
+		return padded_frame
+	else:
+		# Otherwise, just slice normally
+		return f[:, offset:(offset + xdim_reduced)]
 
 #Shift by float shift size
 def shiftFrameFloat(f, shiftSize):
@@ -209,6 +284,48 @@ def getInterpolatedFrameNew(inputFile, theta, df, xdim_reduced):
 #				   theta))
 		f = lofac * lo + (1.0 - lofac) * hi
 	return f
+
+
+def getAveragedFrames(inputFile, theta, delta_theta_rad, df, xdim_reduced):
+	"""
+	This function averages frames within an angular range around `theta`, defined by `delta_theta`.
+	
+	Args:
+		inputFile (str): The path to the input file containing projection data.
+		theta (float): The central angle (in degrees) for the averaging.
+		delta_theta_rad (float): The angular range (in radians) around `theta` to include for averaging, nice to put e.g. 5*pixel_size
+		df (pd.DataFrame): DataFrame containing the frames and corresponding rotation angles.
+		xdim_reduced (int): The reduced dimensionality of the frame.
+		
+	Returns:
+		np.ndarray: The averaged frame.
+	"""
+	# Convert delta_theta to radians
+	delta_theta = 180 * delta_theta_rad / np.pi
+	# Find frames within the angular range (theta ± delta_theta)
+	df = df.sort_values("s_rot")
+	lower_angle = theta - delta_theta
+	upper_angle = theta + delta_theta
+	# Get the frames within the range
+	frames_in_range = df[(df["s_rot"] >= lower_angle) & (df["s_rot"] <= upper_angle)]
+	# Print the number of frames found within the range
+	print(f"For theta={theta}° and delta_theta={delta_theta}°: {len(frames_in_range)} frames found within the range [{lower_angle}°, {upper_angle}°]")
+	if len(frames_in_range) == 0:
+		print(f"No frames found within the range for theta={theta}° ± {delta_theta}°.")
+		return None  # or raise an exception if no frames in the range
+	# Initialize the result frame
+		# Initialize avg_frame from the first frame
+	first_row = frames_in_range.iloc[0]
+	avg_frame = shiftAndReduceFrameFloat(DEN.getFrame(inputFile, first_row["frame_ind"]),
+										 first_row["pixel_shift"], xdim_reduced)
+	# Average remaining frames within the range
+	for idx, row in frames_in_range.iloc[1:].iterrows():
+		frame = shiftAndReduceFrameFloat(DEN.getFrame(inputFile, row["frame_ind"]),
+										 row["pixel_shift"], xdim_reduced)
+		avg_frame += frame
+	# Normalize by the number of frames
+	avg_frame /= len(frames_in_range)
+	return avg_frame
 
 
 #There is likely that the dataset does not contain given angle. In that case use interpolation
@@ -353,6 +470,19 @@ if maxAngle < maxTestAngle:
 
 sinogram_center_offset = 0.0
 
+
+#Do some rough estimation based on few angles
+delta_theta_rad = 5.0 * pix_size # This means +-5 pixels around given angle
+frame0 = getAveragedFrames(ARG.inputFile, 0, delta_theta_rad, df, xdim_reduced=xdim)
+frame180 = getAveragedFrames(ARG.inputFile, 180, delta_theta_rad, df, xdim_reduced=xdim)
+if frame0 is not None and frame180 is not None:
+	estimated_COR = correlation2d_estimate_COR(frame0, frame180)
+	detector_center = 0.5 * (xdim - 1)
+	sinogram_center_offset = estimated_COR - detector_center
+	print(f"Estimated global COR={estimated_COR:.2f} pixels, detector center={detector_center:.2f} pixels, sinogram_center_offset={sinogram_center_offset:.2f} pixels", flush=True)
+	print("global_rotation_center_offset_pix=%f"%(sinogram_center_offset), flush=True)
+	print("global_rotation_center_offset=%f"%(sinogram_center_offset*pix_size), flush=True)
+
 if ARG.load_sinograms is not None:
 	info = DEN.readHeader(ARG.load_sinograms)
 	if len(info["dimspec"]) != 3:
@@ -417,10 +547,26 @@ else:
 		for j in range(len(ySequence)):
 			sinograms[j, k] = frame[ySequence[j]]
 
+
 if ARG.store_sinograms is not None:
-	DEN.storeNdarrayAsDEN(ARG.store_sinograms, sinograms, force=ARG.force)
-	if ARG.verbose:
-		print("Sinograms stored %s"%(ARG.store_sinograms))
+	outpath = Path(ARG.store_sinograms)
+	if outpath.suffix == ".zar" or outpath.suffix == ".zarr":
+		# ---- Write Zarr instead of DEN ----
+		# Create Zarr directory store
+		store = zarr.DirectoryStore(str(outpath))
+		# Create array (overwrite existing when force=True)
+		if outpath.exists() and ARG.force:
+			# delete existing Zarr directory
+			shutil.rmtree(outpath)
+		zarr.save_array(str(outpath), sinograms)
+		if ARG.verbose:
+			print(f"Sinograms stored as Zarr to {outpath}")
+	else:
+		# ---- Original DEN storing ----
+		DEN.storeNdarrayAsDEN(ARG.store_sinograms, sinograms, force=ARG.force)
+		if ARG.verbose:
+			print("Sinograms stored as DEN to %s" % ARG.store_sinograms)
+
 
 sinogramPixels = sinograms.shape[2]
 print("sinogramPixels=%f"%(sinogramPixels))
@@ -867,25 +1013,6 @@ offset = np.nanmedian(offsets)
 print("rotation_center_offset_pix=%s" % (offset))
 print("rotation_center_offset_pix_interp=%s" % (np.nanmedian(interpoffsets)))
 #Create fit
-#First compute pix size
-pix_size = 1.0
-if ARG.input_tick is None:
-	h5 = h5py.File(ARG.input_h5, 'r')
-	if "/entry/hardware/camera1" in h5:
-		cam = "camera1"
-	elif "/entry/hardware/camera" in h5:
-		cam = "camera"
-	else:
-		raise ValueError(
-			"There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."
-			% info["h5"])
-	pix_size_cam = float(h5["entry/hardware/%s/pixelsize" % cam][0])
-	if ARG.override_magnification is not None:
-		pix_size_mag = ARG.override_magnification
-	else:
-		pix_size_mag = float(h5["entry/hardware/%s/magnification" % cam][0])
-	pix_size = float(pix_size_cam / pix_size_mag)
-print("default_pix_size=%s"%(pix_size))
 
 fittable=np.zeros([len(ySequence),5])
 for j in range(len(ySequence)):
