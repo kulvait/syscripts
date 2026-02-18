@@ -53,27 +53,34 @@ def create_radial_mask(h, w, radius, center_x=None, center_y=None):
     return dist <= radius
 
 
-def crop_center(arr, out_x, out_y):
+def crop_center(arr, out_x, out_y, center_x=None, center_y=None):
     """Crop a 2D array symmetrically around center."""
     h, w = arr.shape
-    cx, cy = w // 2, h // 2
-
-    x1 = cx - out_x // 2
+    if center_x is None:
+        center_x = w / 2
+    if center_y is None:
+        center_y = h / 2
+    #Coordinate of the corner of the crop box
+    x1  = int(round(center_x - out_x / 2))
+    y1  = int(round(center_y - out_y / 2))
     x2 = x1 + out_x
-    y1 = cy - out_y // 2
     y2 = y1 + out_y
+
+    #Check bounds
+    if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+        raise ValueError("Crop dimensions exceed array bounds.")
 
     return arr[y1:y2, x1:x2]
 
 
-def filterFrame(frame, out_x, out_y):
+def filterFrame(frame, out_x, out_y, center_x=None, center_y=None):
     """Only applies symmetric center crop (mask already applied)."""
     h, w = frame.shape
 
     if out_x == w and out_y == h:
         return frame  # no crop needed
 
-    return crop_center(frame, out_x, out_y)
+    return crop_center(frame, out_x, out_y, center_x=center_x, center_y=center_y)
 
 
 # ---------------------------------------------------------
@@ -140,6 +147,6 @@ for k in range(out_dimz):
     # Apply mask now (mask already precomputed)
     masked = frame * radial_mask
     # Then crop
-    output_frame = filterFrame(masked, out_dimx, out_dimy)
+    output_frame = filterFrame(masked, out_dimx, out_dimy, center_x=center_x, center_y=center_y)
     # Save
     DEN.writeFrame(ARG.outputDen, k, output_frame, force=True)
