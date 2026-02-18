@@ -15,6 +15,17 @@ parser.add_argument("outputDen", help="Output DEN file")
 parser.add_argument("--radial-mask-radius", type=float, required=True,
                     help="Radius of radial mask in pixels")
 
+#Fine tune specification of radial center
+gx = parser.add_mutually_exclusive_group()
+gx.add_argument("--radial-center-offset-x", type=float, default=None, help="Optional X offset of radial center from image center (default: 0)")
+gx.add_argument("--radial-center-x", type=float, default=None, help="Optional X coordinate of radial center (default: image center)")
+
+gy = parser.add_mutually_exclusive_group()
+gy.add_argument("--radial-center-offset-y", type=float, default=None, help="Optional Y offset of radial center from image center (default: 0)")
+gy.add_argument("--radial-center-y", type=float, default=None, help="Optional Y coordinate of radial center (default: image center)")
+
+
+
 parser.add_argument("--out-dimx", type=int, default=None,
                     help="Optional output dimension X (crop symmetrically)")
 parser.add_argument("--out-dimy", type=int, default=None,
@@ -31,11 +42,14 @@ ARG = parser.parse_args()
 # Helper functions
 # ---------------------------------------------------------
 
-def create_radial_mask(h, w, radius):
+def create_radial_mask(h, w, radius, center_x=None, center_y=None):
     """Return a boolean mask (h,w) with True inside a circle."""
-    cy, cx = h // 2, w // 2
+    if center_x is None:
+        center_x = w / 2
+    if center_y is None:
+        center_y = h / 2
     y, x = np.ogrid[:h, :w]
-    dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+    dist = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
     return dist <= radius
 
 
@@ -91,7 +105,20 @@ if out_dimz > zdim:
 # ---------------------------------------------------------
 # Precompute radial mask here (only once!)
 # ---------------------------------------------------------
-radial_mask = create_radial_mask(ydim, xdim, ARG.radial_mask_radius)
+if ARG.radial_center_x is not None:
+    center_x = ARG.radial_center_x
+elif ARG.radial_center_offset_x is not None:
+    center_x = xdim / 2 + ARG.radial_center_offset_x
+else:
+    center_x = xdim / 2
+
+if ARG.radial_center_y is not None:
+    center_y = ARG.radial_center_y
+elif ARG.radial_center_offset_y is not None:
+    center_y = ydim / 2 + ARG.radial_center_offset_y
+else:
+    center_y = ydim / 2
+radial_mask = create_radial_mask(ydim, xdim, ARG.radial_mask_radius, center_x=center_x, center_y=center_y)
 
 # ---------------------------------------------------------
 # Prepare output file
