@@ -332,7 +332,7 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
     if verbose:
         print(colored(
             f"Creating Zarr v{zarr_version}: shape=({n_images}, {dimy}, {dimx}), "
-            f"dtype={dtype}, compression={compression}, clevel={clevel}",
+            f"dtype={outtype}, compression={compression}, clevel={clevel}",
             "green"))
 
 
@@ -342,26 +342,37 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
     else:
         chunk_shape = (1, dimy, dimx)
 
+    if zarrv3:
+        codec = get_compressor(compression, clevel=clevel, zarrv3=True)
+    else:
+        # Classic v2
+        codec = get_compressor(compression, clevel=clevel, zarrv3=False)
+    
+    if verbose:
+        print("For input compression:", compression, "clevel:", clevel)
+        print(codec) 
+    # Create the base resolution level (s0)
+
     # Create Zarr array
     if zarrv3:
         # Use new create_array API
-        zarr_array = zarr.open(
+        zarr_array = zarr.create_array(
             store=zarrFile,
-            mode='w',
             shape=(n_images, dimy, dimx),
             chunks=chunk_shape,
-            dtype=dtype,
-            codecs=get_compressor(compression, clevel=clevel, zarrv3=True),
+            dtype=outtype,
+            compressors=codec,
+            zarr_format=3,
         )
     else:
         # Classic v2
-        zarr_array = zarr.open(
+        zarr_array = zarr.open_array(
             zarrFile,
             mode='w',
             shape=(n_images, dimy, dimx),
             chunks=chunk_shape,
-            dtype=dtype,
-            compressor=get_compressor(compression, clevel=clevel, zarrv3=False),
+            dtype=outtype,
+            compressor=codec,
             zarr_format=2,
         )
 
