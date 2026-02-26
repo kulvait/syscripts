@@ -26,6 +26,12 @@ import shutil
 from pathlib import Path
 from skimage.measure import block_reduce
 import dask.array as da
+from multiprocessing.dummy import Pool, Lock  # threads
+import multiprocessing as mp
+from multiprocessing import Value
+import traceback
+import os, sys
+
 
 
 from ome_zarr.format import FormatV04
@@ -64,10 +70,27 @@ parser.add_argument('--max-level', type=int, default=5, help="Maximum pyramid le
 parser.add_argument('--matlab-log', type=str, default=None, help="Path to MATLAB log file for extracting parameters.")
 parser.add_argument('--params', type=str, default=None, help="Path to params file for extracting parameters.")
 parser.add_argument('--binning-factor', type=int, default=1, help="Binning factor used for extracting parameters from params file.")
+parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
 parser.add_argument("--verbose", action="store_true")
 
 #ARG = parser.parse_args([])
 ARG = parser.parse_args()
+
+#Set up threading
+if ARG.j < 0:
+    ARG.j = mp.cpu_count()
+    print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()"%(ARG.j))
+elif ARG.j == 0:
+    print("No threading will be used ARG.j=0.")
+else:
+    print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()=%d"%(ARG.j, mp.cpu_count()))
+
+_write_lock = None  # global in worker
+
+def _init_writer_worker(lock):
+    global _write_lock
+    _write_lock = lock
+#END threading setup
 
 def get_compressor(name, clevel=5):
     """Return a zarr-compatible compressor based on name."""
@@ -340,6 +363,60 @@ def writeOMEZarr(inputTifFiles, zarrFile, *,
 
 
 
+def tiffImageToArrayIndex(tiffFile, outArray, kIndex):
+    """Read a single TIFF image and write it to the specified index in the Zarr/numpy array."""
+    # ---- Basic array checks ----
+    if outArray is None or not hasattr(outArray, "shape") or not hasattr(outArray, "dtype"):
+        raise TypeError("outArray must have 'shape' and 'dtype' attributes (NumPy/Zarr-like).")
+
+    if len(outArray.shape) != 3:
+        raise ValueError(f"outArray must be 3D (Z, Y, X); got shape={outArray.shape}")
+    dimz, dimy, dimx = outArray.shape
+    if not (0 <= kIndex < dimz):
+        raise IndexError(f"kIndex {kIndex} out of bounds for array with shape {outArray.shape}")
+    target_dtype = np.dtype(outArray.dtype)
+    # ---- Read TIFF ----
+    try:
+        with Image.open(tiffFile) as im:
+            img = np.array(im)
+    except Exception as e:
+        raise ValueError(f"Failed to read TIFF file '{tiffFile}': {e}")
+    # ---- Check shape ----
+    if img.shape != (dimy, dimx):
+        raise ValueError(
+            f"Shape mismatch in TIFF '{tiffFile}': got {img.shape}, expected {(dimy, dimx)}"
+        )
+    # ---- Cast to output dtype ALWAYS ----
+    if img.dtype != target_dtype:
+        try:
+            img = img.astype(target_dtype, copy=False)
+        except Exception as e:
+            raise ValueError(
+                f"Failed to convert image dtype from {img.dtype} to {target_dtype}: {e}"
+            )
+    outArray[kIndex, :, :] = img
+
+def tiffImageToArrayIndex_worker(tiffFile, outArray, kIndex):
+    """Worker function for multiprocessing that wraps tiffImageToArrayIndex and captures exceptions."""
+    try:
+        tiffImageToArrayIndex(tiffFile, outArray, kIndex)
+        return {"tiffFile": tiffFile, "kIndex": kIndex, "error": None}
+    except Exception as e:
+        return {"tiffFile": tiffFile, "kIndex": kIndex, "error": traceback.format_exc()}
+
+
+progress = Value('i', 0)   # atomic int
+
+
+def progress_callback(result):
+    # result is what the worker returned
+    with progress.get_lock():
+        progress.value += 1
+        count = progress.value
+    if ARG.verbose and (count % 100 == 0 or result["error"] is not None):
+        print(f"Written {count}/{n_images} "
+              f"({os.path.basename(result['tiffFile'])})")
+
 def writeZarrFile(inputTifFiles, zarrFile, *,
                   force=False, dtype=None,
                   compression='zstd', clevel=5, zarrv3=False, verbose=False):
@@ -410,20 +487,31 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
         )
 
     # Write images
-    for i, f in enumerate(inputTifFiles):
-        start = timer()
-        img = np.array(Image.open(f))
-        if ARG.float32:
-            img = img.astype(np.float32)
-
-        if img.shape != (dimy, dimx):
-            raise ValueError(f"Shape mismatch in {f}: got {img.shape}, expected {(dimy, dimx)}")
-
-        zarr_array[i, :, :] = img
-
-        if ARG.verbose and (i % 100 == 0 or i == n_images - 1):
-            print(f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
-
+    if ARG.j == 0:
+        for i, f in enumerate(inputTifFiles):
+            start = timer()
+            tiffImageToArrayIndex(f, zarr_array, i)
+            if ARG.verbose and (i % 100 == 0 or i == n_images - 1):
+                print(f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
+    else:
+        results = []
+        with Pool(ARG.j, initializer=_init_writer_worker, initargs=(Lock(),)) as pool:
+            for i, f in enumerate(inputTifFiles):
+                res = pool.apply_async(tiffImageToArrayIndex_worker, args=(f, zarr_array, i), callback=progress_callback)
+                results.append(res)
+            # Wait for all tasks to complete and check for exceptions
+            pool.close()
+            pool.join()
+        errors = []
+        for res in results:
+            r = res.get()  # This will re-raise any exception from the worker
+            if r["error"] is not None:
+                errors.append((r["tiffFile"], r["kIndex"], r["error"]))
+        if len(errors) > 0:
+            print(colored(f"Encountered {len(errors)} errors during TIFF processing:", "red"))
+            for tiffFile, kIndex, error in errors:
+                print(colored(f"Error processing '{tiffFile}' at index {kIndex}:\n{error}", "red"))
+            raise RuntimeError(f"{len(errors)} errors occurred during TIFF processing. See above for details.")
     if ARG.verbose:
         print(colored(f"Zarr array written to {zarrFile}", "cyan"))
 
