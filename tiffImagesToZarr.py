@@ -84,21 +84,47 @@ def get_compressor(name, clevel=5):
     else:
         raise ValueError(f"Unknown compression type: {name}")
 
-def get_compressor(name, clevel=5, zarrv3=False):
-    """Return a zarr-compatible compressor/codec based on name and zarr format version."""
+def get_compressor(name, clevel=5, zarrv3=False, outtype=None, endian="little"):
+    """
+    Return a zarr-compatible compressor/codec based on name and Zarr format version.
+    
+    Parameters
+    ----------
+    name : str
+        Compression name (e.g., 'none', 'zstd', 'blosc-zstd', 'lz4', 'gzip', ...).
+    clevel : int
+        Compression level (meaning depends on the codec; Zstd/Blosc: 0..9 typical).
+    zarrv3 : bool
+        If True, return a Zarr v3 codec *pipeline* (list) suitable for `codecs=...`.
+        If False, return a single compressor object (e.g., for Zarr v2 `compressor=`).
+    outtype : Optional[Union[np.dtype, type, str]]
+        Array dtype (e.g., np.uint16, 'uint16', np.dtype('uint16')). Used to set
+        Blosc `typesize` (bytes per element). If None, defaults to itemsize=1.
+    endian : str
+        'little' or 'big' – used for v3 BytesCodec. Defaults to 'little'.
+    """
+    # Derive element size in bytes; default to 1 if unknown
+    if outtype is not None:
+        try:
+            itemsize = np.dtype(outtype).itemsize
+        except Exception:
+            itemsize = 1
+    else:
+        itemsize = 1
+
     if not zarrv3:
         from numcodecs import Blosc, GZip as NcGZip
         # Old style compressors (zarr v2 compatible)
         if name == 'none':
             return None
         elif name == 'zstd' or name == 'blosc-zstd':
-            return Blosc(cname='zstd', clevel=clevel, shuffle=Blosc.BITSHUFFLE)
+            return Blosc(cname='zstd', clevel=clevel, shuffle=Blosc.BITSHUFFLE, typesize=itemsize)
         elif name == 'lz4' or name == 'blosc-lz4':
-            return Blosc(cname='lz4', clevel=clevel, shuffle=Blosc.BITSHUFFLE)
+            return Blosc(cname='lz4', clevel=clevel, shuffle=Blosc.BITSHUFFLE, typesize=itemsize)
         elif name == 'gzip' or name == 'blosc-zlib':
             return GZip(level=clevel)
         elif name == 'blosc' or name == 'blosc-blosclz':
-            return Blosc(cname='blosclz', clevel=clevel, shuffle=Blosc.BITSHUFFLE)
+            return Blosc(cname='blosclz', clevel=clevel, shuffle=Blosc.BITSHUFFLE, typesize=itemsize)
         else:
             raise ValueError(f"Unknown compression type: {name}")
     else:
@@ -126,7 +152,8 @@ def get_compressor(name, clevel=5, zarrv3=False):
                 codecs.BloscCodec(
                     cname=codecs.BloscCname.blosclz,
                     clevel=clevel,
-                    shuffle=codecs.BloscShuffle.shuffle,
+                    shuffle="shuffle",
+                    typesize=itemsize,
                 )
             )
         elif name == "blosc-lz4":
@@ -134,7 +161,8 @@ def get_compressor(name, clevel=5, zarrv3=False):
                         codecs.BloscCodec(
                         cname=codecs.BloscCname.lz4,
                         clevel=clevel,
-                        shuffle=codecs.BloscShuffle.shuffle,
+                        shuffle="shuffle",
+                        typesize=itemsize,
                         )
                 )
         elif name == "blosc-lz4hc":
@@ -142,7 +170,8 @@ def get_compressor(name, clevel=5, zarrv3=False):
                         codecs.BloscCodec(
                         cname=codecs.BloscCname.lz4hc,
                         clevel=clevel,
-                        shuffle=codecs.BloscShuffle.shuffle,
+                        shuffle="shuffle",
+                        typesize=itemsize,
                         )
                 )
         elif name == "blosc-snappy":
@@ -150,7 +179,8 @@ def get_compressor(name, clevel=5, zarrv3=False):
                         codecs.BloscCodec(
                         cname=codecs.BloscCname.snappy,
                         clevel=clevel,
-                        shuffle=codecs.BloscShuffle.shuffle,
+                        shuffle="shuffle",
+                        typesize=itemsize,
                         )
                 )
         elif name == "blosc-zlib":
@@ -158,7 +188,8 @@ def get_compressor(name, clevel=5, zarrv3=False):
                         codecs.BloscCodec(
                         cname=codecs.BloscCname.zlib,
                         clevel=clevel,
-                        shuffle=codecs.BloscShuffle.shuffle,
+                        shuffle="shuffle",
+                        typesize=itemsize,
                         )
                 )
         elif name == "blosc-zstd":
@@ -166,7 +197,8 @@ def get_compressor(name, clevel=5, zarrv3=False):
                         codecs.BloscCodec(
                         cname=codecs.BloscCname.zstd,
                         clevel=clevel,
-                        shuffle=codecs.BloscShuffle.shuffle,
+                        shuffle="shuffle",
+                        typesize=itemsize,
                         )
                 )
         else:
@@ -337,16 +369,17 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
 
 
     # Precompute chunk shape based on image dimensions
-    if dimx > 512 and dimy > 512:
-        chunk_shape = (1, 256, 256)
-    else:
-        chunk_shape = (1, dimy, dimx)
+    #if dimx > 512 and dimy > 512:
+    #    chunk_shape = (1, 256, 256)
+    #else:
+    #    chunk_shape = (1, dimy, dimx)
+    chunk_shape = (1, dimy, dimx)
 
     if zarrv3:
-        codec = get_compressor(compression, clevel=clevel, zarrv3=True)
+        codec = get_compressor(compression, clevel=clevel, zarrv3=True, outtype=outtype)
     else:
         # Classic v2
-        codec = get_compressor(compression, clevel=clevel, zarrv3=False)
+        codec = get_compressor(compression, clevel=clevel, zarrv3=False, outtype=outtype)
     
     if verbose:
         print("For input compression:", compression, "clevel:", clevel)
