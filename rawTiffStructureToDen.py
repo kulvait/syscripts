@@ -70,7 +70,20 @@ def writeDenFile(df, inputDir, denFile, force=False):
 		else:
 			raise IOError("File %s exists, add force to overwrite" % (denFile))
 	if "time" in df.columns:
-		df = df.sort_values("time", ascending=True)
+		#Check it is sorted by time and raise error if not
+		if not df["time"].is_monotonic_increasing:
+			raise ValueError("Dataframe is not sorted by time, can not write to Zarr")
+	#Check image_file column exists and dataset is sorted by image_file
+	if "image_file" not in df.columns:
+		raise ValueError("Dataframe does not contain image_file column, can not write to Zarr")
+	if not df["image_file"].is_monotonic_increasing:
+		raise ValueError("Dataframe is not sorted by image_file, can not write to Zarr")
+	inputTifFiles = [ x.decode("utf-8") if isinstance(x, bytes) else x for x in df["image_file"] ]
+	tifFilesBasename = [ os.path.basename(f) for f in inputTifFiles ]
+	if not all(tifFilesBasename[i] <= tifFilesBasename[i+1] for i in range(len(tifFilesBasename)-1)):
+		raise ValueError("Dataframe is not sorted by image_file, can not write to Zarr")
+	else:
+		print(tifFilesBasename[0], tifFilesBasename[-1])
 	fileStr = df["image_file"].iloc[0]#In some versions this is string but in some bytes
 	if isinstance(fileStr, bytes):
 		fileStr = fileStr.decode("utf-8")

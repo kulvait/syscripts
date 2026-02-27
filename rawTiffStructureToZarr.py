@@ -52,6 +52,7 @@ parser.add_argument('--compression', type=str,
 parser.add_argument('--clevel', type=int, default=5,
 					help="Compression level (default: 5).")
 parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
+parser.add_argument("--zip", action="store_true", help="Use zip store for Zarr output instead of directory store.")
 parser.add_argument("--verbose", action="store_true")
 
 try:
@@ -430,7 +431,6 @@ def copy_h5_arrays_into_group(
 					entry,
 					shape=str_array.shape,
 					dtype="string",
-					overwrite=True,
 				)
 				za[:] = str_array
 			else:
@@ -439,13 +439,12 @@ def copy_h5_arrays_into_group(
 					shape=h5[entry].shape,
 					dtype=h5[entry].dtype,
 					compressors=compressor,
-					overwrite=True,
 				)
 				za[:] = h5[entry][:]
 				if verbose:
 					print(f"[dataset] {h5.name}/{entry}  shape={h5[entry].shape}	dtype={h5[entry].dtype}  -> zarr dtype={za.dtype}  chunks={za.chunks}")
 		elif isinstance(h5[entry], h5py.Group):
-			subgroup = zarr_params_group.create_group(entry)
+			subgroup = zarr_params_group.require_group(entry)
 			copy_h5_arrays_into_group(h5[entry], subgroup)
 		else:
 			raise ValueError(f"HDF5 entry '{entry}' is neither a group nor a dataset, cannot copy.")
@@ -488,8 +487,13 @@ experimentInfo["export"] = export
 
 experimentInfo_sanitized = sanitize_for_json(experimentInfo)
 
+if ARG.zip or ARG.outputZarr.endswith(".zip"):
+	store = zarr.storage.ZipStore(ARG.outputZarr, mode='w')
+else:
+	store = ARG.outputZarr
+
 zarr_top_level = zarr.open_group(
-			store=ARG.outputZarr,
+			store=store,
 			mode='w',
 			attributes=experimentInfo_sanitized
 		)
