@@ -792,6 +792,7 @@ with tf.device('/cpu:0'):
 	#AGM = AlphaGammaConsecutiveMinimizer(b, scaledBasisVec, ff_first, b_avg, initScale=None, alpha=alpha, gamma=gamma, weight_l1=0, weight_tv=1, weight_neg=0, weight_cns_l1=1, weight_cns_tv=0, dtype=tf.float32)
 	AGM = AlphaGammaMinimizer(b, basisVec, np.ones(basisVec.shape[0]), alpha, gamma, weight_l1=0, weight_tv=1, weight_neg=0, dtype=tf.float32)
 	x0 = np.zeros(basisVec.shape[0]-1, dtype=np.float32)
+	x = np.zeros(basisVec.shape[0]-1, dtype=np.float32)
 	for k in np.arange(frameCount):
 		#print("Computing k=%d"%k)
 		start_time_k = time.time()
@@ -799,8 +800,9 @@ with tf.device('/cpu:0'):
 		AGM.updateB(b)
 		minimizer = AGM.getMinimizer()
 		converged=True
+		x_last = x.copy()
 		if ARG.lbfgs:
-			opt = compute_lbfgs(minimizer, x0, max_iterations=100)
+			opt = compute_lbfgs(minimizer, x_last, max_iterations=100)
 			x = opt.position.numpy().astype(np.float32)
 			if not opt.converged:
 				print(termcolor.colored("ERROR: k=%d LBFGS optimization did not converge"%k, "red"))
