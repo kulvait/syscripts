@@ -109,6 +109,33 @@ def masked_isotropic_total_variation(image, mask_x, mask_y):
 	tv = tf.sqrt(tf.reduce_sum(tf.square(dx)) + tf.reduce_sum(tf.square(dy)))
 	return tv
 
+
+
+def tv_anisotropic_2d(image):
+	"""
+	Anisotropic TV for a 2D image (H, W), single channel.
+	TV_aniso = sum |dx| + |dy|
+	"""
+	dx = image[:, 1:] - image[:, :-1]	# (H, W-1)
+	dy = image[1:, :] - image[:-1, :]	# (H-1, W)
+	return tf.reduce_sum(tf.abs(dx)) + tf.reduce_sum(tf.abs(dy))
+
+
+def tv_isotropic_2d(image, epsilon=0.0):
+	"""
+	Isotropic TV for a 2D image (H, W), single channel.
+	TV_iso = sum sqrt(dx^2 + dy^2)
+	Uses epsilon for numerical stability in gradients.
+	"""
+	dx = image[:, 1:] - image[:, :-1]	# (H, W-1)
+	dy = image[1:, :] - image[:-1, :]	# (H-1, W)
+	# Crop to common region for pixel-wise pairing
+	h = tf.minimum(tf.shape(dx)[0], tf.shape(dy)[0])
+	w = tf.minimum(tf.shape(dx)[1], tf.shape(dy)[1])
+	dx_c = dx[:h, :w]
+	dy_c = dy[:h, :w]
+	return tf.reduce_sum(tf.sqrt(dx_c * dx_c + dy_c * dy_c + epsilon))
+
 def createSVDVec(fitFile, frameCount, alpha=None):
 	inf = DEN.readHeader(fitFile)
 	fitVec = np.zeros([frameCount, inf["shape"][1], inf["shape"][2]], dtype=np.float32)
@@ -219,7 +246,8 @@ class AlphaGammaMinimizer:
 		#TVI = tf.math.divide(FF, B) + tf.math.divide(B, FF)
 		#return self.weight_tv * masked_isotropic_total_variation(TVI, self.gamma_reduced_x_mask, self.gamma_reduced_y_mask)
 		TVI = tf.math.divide(FF, B)
-		return tf.image.total_variation(tf.expand_dims(TVI, axis=-1)) # Using TensorFlow's built-in total variation
+		#return tf.image.total_variation(tf.expand_dims(TVI, axis=-1)) # Using TensorFlow's built-in total variation
+		return tv_anisotropic_2d(TVI)
 		#return self.weight_tv * masked_anisotropic_total_variation(TVI, self.gamma_reduced_x_mask, self.gamma_reduced_y_mask)
 
 	def getTVTensor(self, B, FF):
@@ -231,7 +259,8 @@ class AlphaGammaMinimizer:
 		#TVI = tf.math.divide_no_nan(tf.math.softplus(FF), B)
 		#The following converges as well
 		TVI = tf.math.divide(FF, B)
-		return tf.image.total_variation(tf.expand_dims(TVI, axis=-1)) # Using TensorFlow's built-in total variation
+		#return tf.image.total_variation(tf.expand_dims(TVI, axis=-1)) # Using TensorFlow's built-in total variation
+		return tv_anisotropic_2d(TVI)
 		#return self.weight_tv * masked_isotropic_total_variation(TVI, self.gamma_x_mask, self.gamma_y_mask)
 
 	def getL1Tensor(self, B, FF):
@@ -261,6 +290,7 @@ class AlphaGammaMinimizer:
 			ff /= norm_factor
 			ff_reduced /= norm_factor
 			ret = self.getTVTensorReduced(b_reduced_tf, ff_reduced)
+			#ret = self.getTVTensor(b_tf, ff)
 			return ret
 		return minimizer
 
@@ -622,10 +652,18 @@ def compute_lbfgs(minimizer, x0, max_iterations=50, parallel_iterations=1):
 	opt = tfp.optimizer.lbfgs_minimize(value_and_gradients_function=value_and_gradients_function,initial_position=init_position, max_iterations=max_iterations, parallel_iterations=parallel_iterations)
 	return opt
 
-def compute_adam(minimizer, x0):
+def compute_adam(minimizer, x0, learning_rate=0.001, num_steps=200):
 	x = tf.Variable(x0, dtype=tf.float32)
-	loss_fn = lambda: minimizer(x)
-	losses = tfp.math.minimize(loss_fn, optimizer = tf.keras.optimizers.Adam(learning_rate=0.05), num_steps=200)
+	opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+	losses = []
+	for step in range(num_steps):
+		with tf.GradientTape() as tape:
+			loss = minimizer(x)
+		grads = tape.gradient(loss, x)
+		opt.apply_gradients([(grads, x)])
+		losses.append(loss.numpy())
+	#loss_fn = lambda: minimizer(x)
+	#losses = tfp.math.minimize(loss_fn, optimizer = tf.keras.optimizers.Adam(learning_rate=0.05), num_steps=200)
 	return x, losses
 
 
