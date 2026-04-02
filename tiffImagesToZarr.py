@@ -11,7 +11,7 @@ import pandas as pd
 import statistics
 from PIL import Image
 from PIL.TiffTags import TAGS
-#pd.set_option('display.max_columns', 100) to display untruncated columns
+# pd.set_option('display.max_columns', 100) to display untruncated columns
 import sys
 import os
 import argparse
@@ -30,8 +30,8 @@ from multiprocessing.dummy import Pool, Lock  # threads
 import multiprocessing as mp
 from multiprocessing import Value
 import traceback
-import os, sys
-
+import os
+import sys
 
 
 from ome_zarr.format import FormatV04
@@ -58,39 +58,53 @@ parser.add_argument(
     action="store_true"
 )
 parser.add_argument('--compression', type=str,
-                    choices=['none', 'zstd', 'lz4', 'gzip', 'blosc', 'blosc-blosclz', 'blosc-lz4', 'blosc-lz4hc', 'blosc-snappy', 'blosc-zlib', 'blosc-zstd'],
+                    choices=['none', 'zstd', 'lz4', 'gzip', 'blosc', 'blosc-blosclz',
+                             'blosc-lz4', 'blosc-lz4hc', 'blosc-snappy', 'blosc-zlib', 'blosc-zstd'],
                     default='blosc-zstd',
                     help="Compression type (default: blosc-zstd).")
 parser.add_argument('--clevel', type=int, default=5,
                     help="Compression level (default: 5).")
-parser.add_argument('--zarrv3', action='store_true', help="Write Zarr v3 store instead of v2.")
-parser.add_argument('--ome', action='store_true', help="Write OME-Zarr instead of plain.")
-parser.add_argument('--neuroglancer', action='store_true', help="Write Zarr in Neuroglancer Precomputed format.")
-parser.add_argument('--max-level', type=int, default=5, help="Maximum pyramid level for pyramid")
-parser.add_argument('--matlab-log', type=str, default=None, help="Path to MATLAB log file for extracting parameters.")
-parser.add_argument('--params', type=str, default=None, help="Path to params file for extracting parameters.")
-parser.add_argument('--binning-factor', type=int, default=1, help="Binning factor used for extracting parameters from params file.")
-parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
+parser.add_argument('--zarrv3', action='store_true',
+                    help="Write Zarr v3 store instead of v2.")
+parser.add_argument('--ome', action='store_true',
+                    help="Write OME-Zarr instead of plain.")
+parser.add_argument('--neuroglancer', action='store_true',
+                    help="Write Zarr in Neuroglancer Precomputed format.")
+parser.add_argument('--max-level', type=int, default=5,
+                    help="Maximum pyramid level for pyramid")
+parser.add_argument('--matlab-log', type=str, default=None,
+                    help="Path to MATLAB log file for extracting parameters.")
+parser.add_argument('--params', type=str, default=None,
+                    help="Path to params file for extracting parameters.")
+parser.add_argument('--binning-factor', type=int, default=1,
+                    help="Binning factor used for extracting parameters from params file.")
+parser.add_argument('--zip', action='store_true',
+                    help="Write Zarr store as a single zip file instead of directory.")
+parser.add_argument("-j", "--threads", default=-1, type=int,
+                    help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
 parser.add_argument("--verbose", action="store_true")
 
-#ARG = parser.parse_args([])
+# ARG = parser.parse_args([])
 ARG = parser.parse_args()
 
-#Set up threading
+# Set up threading
 if ARG.j < 0:
     ARG.j = mp.cpu_count()
-    print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()"%(ARG.j))
+    print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()" % (ARG.j))
 elif ARG.j == 0:
     print("No threading will be used ARG.j=0.")
 else:
-    print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()=%d"%(ARG.j, mp.cpu_count()))
+    print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()=%d" % (
+        ARG.j, mp.cpu_count()))
 
 _write_lock = None  # global in worker
+
 
 def _init_writer_worker(lock):
     global _write_lock
     _write_lock = lock
-#END threading setup
+# END threading setup
+
 
 def get_compressor(name, clevel=5):
     """Return a zarr-compatible compressor based on name."""
@@ -107,10 +121,11 @@ def get_compressor(name, clevel=5):
     else:
         raise ValueError(f"Unknown compression type: {name}")
 
+
 def get_compressor(name, clevel=5, zarrv3=False, outtype=None, endian="little"):
     """
     Return a zarr-compatible compressor/codec based on name and Zarr format version.
-    
+
     Parameters
     ----------
     name : str
@@ -180,56 +195,56 @@ def get_compressor(name, clevel=5, zarrv3=False, outtype=None, endian="little"):
                 )
             )
         elif name == "blosc-lz4":
-                codecs_chain.append(
-                        codecs.BloscCodec(
-                        cname=codecs.BloscCname.lz4,
-                        clevel=clevel,
-                        shuffle="shuffle",
-                        typesize=itemsize,
-                        )
+            codecs_chain.append(
+                codecs.BloscCodec(
+                    cname=codecs.BloscCname.lz4,
+                    clevel=clevel,
+                    shuffle="shuffle",
+                    typesize=itemsize,
                 )
+            )
         elif name == "blosc-lz4hc":
-                codecs_chain.append(
-                        codecs.BloscCodec(
-                        cname=codecs.BloscCname.lz4hc,
-                        clevel=clevel,
-                        shuffle="shuffle",
-                        typesize=itemsize,
-                        )
+            codecs_chain.append(
+                codecs.BloscCodec(
+                    cname=codecs.BloscCname.lz4hc,
+                    clevel=clevel,
+                    shuffle="shuffle",
+                    typesize=itemsize,
                 )
+            )
         elif name == "blosc-snappy":
-                codecs_chain.append(
-                        codecs.BloscCodec(
-                        cname=codecs.BloscCname.snappy,
-                        clevel=clevel,
-                        shuffle="shuffle",
-                        typesize=itemsize,
-                        )
+            codecs_chain.append(
+                codecs.BloscCodec(
+                    cname=codecs.BloscCname.snappy,
+                    clevel=clevel,
+                    shuffle="shuffle",
+                    typesize=itemsize,
                 )
+            )
         elif name == "blosc-zlib":
-                codecs_chain.append(
-                        codecs.BloscCodec(
-                        cname=codecs.BloscCname.zlib,
-                        clevel=clevel,
-                        shuffle="shuffle",
-                        typesize=itemsize,
-                        )
+            codecs_chain.append(
+                codecs.BloscCodec(
+                    cname=codecs.BloscCname.zlib,
+                    clevel=clevel,
+                    shuffle="shuffle",
+                    typesize=itemsize,
                 )
+            )
         elif name == "blosc-zstd":
-                codecs_chain.append(
-                        codecs.BloscCodec(
-                        cname=codecs.BloscCname.zstd,
-                        clevel=clevel,
-                        shuffle="shuffle",
-                        typesize=itemsize,
-                        )
+            codecs_chain.append(
+                codecs.BloscCodec(
+                    cname=codecs.BloscCname.zstd,
+                    clevel=clevel,
+                    shuffle="shuffle",
+                    typesize=itemsize,
                 )
+            )
         else:
             raise ValueError(f"Unknown compressor type '{name}' for Zarr v3")
         return codecs_chain
 
 
-#Reading Matlab log
+# Reading Matlab log
 
 def read_matlab_log(file_path):
     """Reads the MATLAB log file and extracts relevant parameters."""
@@ -256,28 +271,33 @@ def read_matlab_log(file_path):
             elif unit == "um":
                 parameters['par_eff_pixel_size_um'] = value  # Already in um
             else:
-                raise ValueError(f"Unknown unit for 'par.eff_pixel_size': {unit}. Expected 'micron' or 'um'.")
+                raise ValueError(
+                    f"Unknown unit for 'par.eff_pixel_size': {unit}. Expected 'micron' or 'um'.")
         # Find the binned effective pixel size and its unit
-        match_pixel_size_binned = re.search(eff_pixel_size_binned_pattern, content)
+        match_pixel_size_binned = re.search(
+            eff_pixel_size_binned_pattern, content)
         if match_pixel_size_binned:
             value = float(match_pixel_size_binned.group(1))
             unit = match_pixel_size_binned.group(2).lower()
 
             if unit == "micron":
-                parameters['par_eff_pixel_size_binned_um'] = value  # Store in um
+                # Store in um
+                parameters['par_eff_pixel_size_binned_um'] = value
             elif unit == "um":
-                parameters['par_eff_pixel_size_binned_um'] = value  # Already in um
+                # Already in um
+                parameters['par_eff_pixel_size_binned_um'] = value
             else:
-                raise ValueError(f"Unknown unit for 'par.eff_pixel_size_binned': {unit}. Expected 'micron' or 'um'.")
+                raise ValueError(
+                    f"Unknown unit for 'par.eff_pixel_size_binned': {unit}. Expected 'micron' or 'um'.")
         # Find the raw_binning_factor (default 1)
         match_binning = re.search(binning_factor_pattern, content)
         if match_binning:
             parameters['raw_binning_factor'] = int(match_binning.group(1))
         elif parameters['par_eff_pixel_size_binned_um'] > 0.0 and parameters['par_eff_pixel_size_um'] > 0.0:
-            parameters['raw_binning_factor'] = int(parameters['par_eff_pixel_size_um'] / parameters['par_eff_pixel_size_binned_um'])
+            parameters['raw_binning_factor'] = int(
+                parameters['par_eff_pixel_size_um'] / parameters['par_eff_pixel_size_binned_um'])
     print("Extracted parameters from MATLAB log:", parameters)
     return parameters
-
 
 
 def dir_size(path):
@@ -290,6 +310,7 @@ def dir_size(path):
     else:
         return 0
 
+
 def format_time(seconds):
     """Return time as H:MM:SS string."""
     m, s = divmod(seconds, 60)
@@ -299,9 +320,11 @@ def format_time(seconds):
 # -------------------------------
 # Core functionality
 # -------------------------------
+
+
 def writeOMEZarr(inputTifFiles, zarrFile, *,
-                  force=False, dtype=None,
-                  compression='zstd', clevel=5, zarrv3=False, verbose=False):
+                 force=False, dtype=None,
+                 compression='zstd', clevel=5, zarrv3=False, verbose=False):
     if os.path.exists(zarrFile):
         if force:
             shutil.rmtree(zarrFile)
@@ -319,7 +342,8 @@ def writeOMEZarr(inputTifFiles, zarrFile, *,
         outtype = im0.dtype
 
     if verbose:
-        print(f"Creating OME-Zarr v3: shape=({n_images}, {dimy}, {dimx}), dtype={dtype}, compression={compression}, clevel={clevel}")
+        print(
+            f"Creating OME-Zarr v3: shape=({n_images}, {dimy}, {dimx}), dtype={dtype}, compression={compression}, clevel={clevel}")
 
     # Precompute chunk shape based on image dimensions
     if dimx > 512 and dimy > 512:
@@ -343,14 +367,16 @@ def writeOMEZarr(inputTifFiles, zarrFile, *,
         if dtype == np.float32:
             img = img.astype(np.float32)
         if img.shape != (dimy, dimx):
-            raise ValueError(f"Shape mismatch in {f}: got {img.shape}, expected {(dimy, dimx)}")
+            raise ValueError(
+                f"Shape mismatch in {f}: got {img.shape}, expected {(dimy, dimx)}")
         image_data[i, :, :] = img
         if verbose and (i % 100 == 0 or i == n_images - 1):
-            print(f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
+            print(
+                f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
 
     # Write image data to OME-Zarr
-    omezarr_write_image(image=image_data, group=root, axes="zyx", 
-                storage_options=dict(chunks=chunk_shape, compressor=get_compressor(compression, clevel=clevel, zarrv3=zarrv3)))
+    omezarr_write_image(image=image_data, group=root, axes="zyx",
+                        storage_options=dict(chunks=chunk_shape, compressor=get_compressor(compression, clevel=clevel, zarrv3=zarrv3)))
 
     # Add optional metadata for visualization and analysis
     omezarr_add_metadata(root, {"omero": {
@@ -362,18 +388,20 @@ def writeOMEZarr(inputTifFiles, zarrFile, *,
         print(f"OME-Zarr array written to {zarrFile}")
 
 
-
 def tiffImageToArrayIndex(tiffFile, outArray, kIndex):
     """Read a single TIFF image and write it to the specified index in the Zarr/numpy array."""
     # ---- Basic array checks ----
     if outArray is None or not hasattr(outArray, "shape") or not hasattr(outArray, "dtype"):
-        raise TypeError("outArray must have 'shape' and 'dtype' attributes (NumPy/Zarr-like).")
+        raise TypeError(
+            "outArray must have 'shape' and 'dtype' attributes (NumPy/Zarr-like).")
 
     if len(outArray.shape) != 3:
-        raise ValueError(f"outArray must be 3D (Z, Y, X); got shape={outArray.shape}")
+        raise ValueError(
+            f"outArray must be 3D (Z, Y, X); got shape={outArray.shape}")
     dimz, dimy, dimx = outArray.shape
     if not (0 <= kIndex < dimz):
-        raise IndexError(f"kIndex {kIndex} out of bounds for array with shape {outArray.shape}")
+        raise IndexError(
+            f"kIndex {kIndex} out of bounds for array with shape {outArray.shape}")
     target_dtype = np.dtype(outArray.dtype)
     # ---- Read TIFF ----
     try:
@@ -396,6 +424,7 @@ def tiffImageToArrayIndex(tiffFile, outArray, kIndex):
             )
     outArray[kIndex, :, :] = img
 
+
 def tiffImageToArrayIndex_worker(tiffFile, outArray, kIndex):
     """Worker function for multiprocessing that wraps tiffImageToArrayIndex and captures exceptions."""
     try:
@@ -416,6 +445,7 @@ def progress_callback(result):
     if ARG.verbose and (count % 100 == 0 or result["error"] is not None):
         print(f"Written {count}/{n_images} "
               f"({os.path.basename(result['tiffFile'])})")
+
 
 def writeZarrFile(inputTifFiles, zarrFile, *,
                   force=False, dtype=None,
@@ -444,25 +474,29 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
             f"dtype={outtype}, compression={compression}, clevel={clevel}",
             "green"))
 
-
     # Precompute chunk shape based on image dimensions
-    #if dimx > 512 and dimy > 512:
+    # if dimx > 512 and dimy > 512:
     #    chunk_shape = (1, 256, 256)
-    #else:
+    # else:
     #    chunk_shape = (1, dimy, dimx)
     chunk_shape = (1, dimy, dimx)
 
     if zarrv3:
-        codec = get_compressor(compression, clevel=clevel, zarrv3=True, outtype=outtype)
+        codec = get_compressor(compression, clevel=clevel,
+                               zarrv3=True, outtype=outtype)
     else:
         # Classic v2
-        codec = get_compressor(compression, clevel=clevel, zarrv3=False, outtype=outtype)
-    
+        codec = get_compressor(compression, clevel=clevel,
+                               zarrv3=False, outtype=outtype)
+
     if verbose:
         print("For input compression:", compression, "clevel:", clevel)
-        print(codec) 
+        print(codec)
     # Create the base resolution level (s0)
-
+        if ARG.zip or ARG.outputZarr.endswith(".zip"):
+            store = zarr.storage.ZipStore(ARG.outputZarr, mode='w')
+        else:
+            store = ARG.outputZarr
     # Create Zarr array
     if zarrv3:
         # Use new create_array API
@@ -492,12 +526,14 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
             start = timer()
             tiffImageToArrayIndex(f, zarr_array, i)
             if ARG.verbose and (i % 100 == 0 or i == n_images - 1):
-                print(f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
+                print(
+                    f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
     else:
         results = []
         with Pool(ARG.j, initializer=_init_writer_worker, initargs=(Lock(),)) as pool:
             for i, f in enumerate(inputTifFiles):
-                res = pool.apply_async(tiffImageToArrayIndex_worker, args=(f, zarr_array, i), callback=progress_callback)
+                res = pool.apply_async(tiffImageToArrayIndex_worker, args=(
+                    f, zarr_array, i), callback=progress_callback)
                 results.append(res)
             # Wait for all tasks to complete and check for exceptions
             pool.close()
@@ -508,13 +544,15 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
             if r["error"] is not None:
                 errors.append((r["tiffFile"], r["kIndex"], r["error"]))
         if len(errors) > 0:
-            print(colored(f"Encountered {len(errors)} errors during TIFF processing:", "red"))
+            print(
+                colored(f"Encountered {len(errors)} errors during TIFF processing:", "red"))
             for tiffFile, kIndex, error in errors:
-                print(colored(f"Error processing '{tiffFile}' at index {kIndex}:\n{error}", "red"))
-            raise RuntimeError(f"{len(errors)} errors occurred during TIFF processing. See above for details.")
+                print(
+                    colored(f"Error processing '{tiffFile}' at index {kIndex}:\n{error}", "red"))
+            raise RuntimeError(
+                f"{len(errors)} errors occurred during TIFF processing. See above for details.")
     if ARG.verbose:
         print(colored(f"Zarr array written to {zarrFile}", "cyan"))
-
 
 
 def downscale_image(image, factor=2):
@@ -525,21 +563,24 @@ def downscale_image(image, factor=2):
 def create_metadata(store):
     """Create .zarray and .zattrs files in the store."""
     # Assuming you have the necessary metadata for Neuroglancer format
-    store.attrs["resolution"] = [1.0, 1.0, 1.0]  # Example: voxel size (in XYZ directions)
+    # Example: voxel size (in XYZ directions)
+    store.attrs["resolution"] = [1.0, 1.0, 1.0]
 
     # Create the .zarray metadata file for the root "data" array (empty array to trigger the creation of .zarray)
-    store.create_dataset("data", shape=(0, 0, 0), dtype='f4')  # Empty dataset to generate .zarray
+    # Empty dataset to generate .zarray
+    store.create_dataset("data", shape=(0, 0, 0), dtype='f4')
     store['data'].attrs["compressor"] = {"id": "zstd", "level": 5}
 
     # Create the .zattrs file (optional but recommended)
     store.attrs["description"] = "Neuroglancer Precomputed format"
     store.attrs["version"] = "v1.0"
 
+
 def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
                           force=False, dtype=None,
                           compression='zstd', clevel=5, max_level=3, zarrv3=False, verbose=False):
     """Convert a TIFF stack to a 3D Zarr array following Neuroglancer Precomputed format.
-    
+
     Parameters:
     - inputTifFiles: List of TIFF files containing the image stack.
     - zarrFile: Path to save the resulting Zarr file.
@@ -559,7 +600,7 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
             raise IOError(f"File {zarrFile} exists, use --force to overwrite")
 
     # Load the first image to get the dimensions
-    im0 = np.array(Image.open(inputTifFiles[0]))  
+    im0 = np.array(Image.open(inputTifFiles[0]))
     dimy, dimx = im0.shape
     n_images = len(inputTifFiles)
 
@@ -578,7 +619,7 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
     if verbose:
         print(f"Creating Zarr for Neuroglancer format (Zarr v{'3' if zarrv3 else '2'}): shape=({n_images}, {dimy}, {dimx}), "
               f"dtype={dtype}, compression={compression}, clevel={clevel}")
-    #Default attributes for Neuroglancer Precomputed format
+    # Default attributes for Neuroglancer Precomputed format
     # {"axes":["x","y","z"],"downsamplingFactors":[[1,1,1],[2,2,2],[4,4,4],[8,8,8],[16,16,16]],"multiScale":true,"resolution":[25.08,25.08,25.08],"units":["um","um","um"]}
     voxel_size_um = [2.5, 2.5, 2.5]  # Default voxel size in micrometers
     # If MATLAB log is provided, extract voxel size
@@ -593,18 +634,21 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
     elif ARG.params is not None:
         params = UTILS.readParamsFile(ARG.params)
         if 'pixel_size_x' in params_dict:
-            voxel_size_um[0] = float(params_dict['pixel_size_x']) * ARG.binning_factor
-            voxel_size_um[1] = float(params_dict['pixel_size_x']) * ARG.binning_factor
+            voxel_size_um[0] = float(
+                params_dict['pixel_size_x']) * ARG.binning_factor
+            voxel_size_um[1] = float(
+                params_dict['pixel_size_x']) * ARG.binning_factor
         if 'pixel_size_y' in params_dict:
-            voxel_size_um[2] = float(params_dict['pixel_size_y']) * ARG.binning_factor
+            voxel_size_um[2] = float(
+                params_dict['pixel_size_y']) * ARG.binning_factor
 
     attrs = {
         "axes": ["z", "y", "x"],
         "downsamplingFactors": [[2**i, 2**i, 2**i] for i in range(max_level + 1)],
-         "multiScale": True,
-         "resolution": [voxel_size_um[2], voxel_size_um[1], voxel_size_um[0]],
-         "units": ["um", "um", "um"],
-         "dimension_units": ["%f um" % voxel_size_um[2], "%f um" % voxel_size_um[1], "%f um" % voxel_size_um[0]],
+        "multiScale": True,
+        "resolution": [voxel_size_um[2], voxel_size_um[1], voxel_size_um[0]],
+        "units": ["um", "um", "um"],
+        "dimension_units": ["%f um" % voxel_size_um[2], "%f um" % voxel_size_um[1], "%f um" % voxel_size_um[0]],
     }
     ome_attrs = {
         "version": "0.5",
@@ -612,28 +656,28 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
     }
     # Create multiscales attr according to https://ngff.openmicroscopy.org/0.4/#multiscale-md spec
     multiscale_attr = [
-    {
-        "version": "0.5",
-        "name": "AMBCAT",
-        "axes": [
-        {"name": "z", "type": "space", "unit": "micrometer"},
-        {"name": "y", "type": "space", "unit": "micrometer"},
-        {"name": "x", "type": "space", "unit": "micrometer"}
-        ],
-        "type": "skimage.measure.block_reduce",
-        "metadata": { "command": "zarr_array[:] = block_reduce(zarr_array_s0, block_size=(2**level, 2**level, 2**level), func=np.mean)" },
-    }
+        {
+            "version": "0.5",
+            "name": "AMBCAT",
+            "axes": [
+                {"name": "z", "type": "space", "unit": "micrometer"},
+                {"name": "y", "type": "space", "unit": "micrometer"},
+                {"name": "x", "type": "space", "unit": "micrometer"}
+            ],
+            "type": "skimage.measure.block_reduce",
+            "metadata": {"command": "zarr_array[:] = block_reduce(zarr_array_s0, block_size=(2**level, 2**level, 2**level), func=np.mean)"},
+        }
     ]
     datasets = []
     for level in range(max_level + 1):
         datasets.append({"path": f"s{level}",
-        "coordinateTransformations": [
-        {
-            "type": "scale",
-            "scale": [(2**level), (2**level), (2**level)]
-        }
-        ]
-        })
+                         "coordinateTransformations": [
+                             {
+                                 "type": "scale",
+                                 "scale": [(2**level), (2**level), (2**level)]
+                             }
+                         ]
+                         })
     multiscale_attr[0]["datasets"] = datasets
     ome_attrs["multiscales"] = multiscale_attr
     attrs["ome"] = ome_attrs
@@ -655,12 +699,13 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
     if zarrv3:
         codec = get_compressor(compression, clevel=clevel, zarrv3=True)
         print("For input compression:", compression, "clevel:", clevel)
-        print(codec) 
+        print(codec)
     else:
         # Classic v2
         codec = get_compressor(compression, clevel=clevel, zarrv3=False),
     # Create the base resolution level (s0)
-    zarr_array_s0 = zarr_top_level.create_array('s0', shape=(n_images, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+    zarr_array_s0 = zarr_top_level.create_array('s0', shape=(
+        n_images, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
     # Write images
     for i, f in enumerate(inputTifFiles):
         start = timer()
@@ -668,28 +713,33 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
         if ARG.float32:
             img = img.astype(np.float32)
         if img.shape != (dimy, dimx):
-            raise ValueError(f"Shape mismatch in {f}: got {img.shape}, expected {(dimy, dimx)}")
+            raise ValueError(
+                f"Shape mismatch in {f}: got {img.shape}, expected {(dimy, dimx)}")
         zarr_array_s0[i, :, :] = img
         if ARG.verbose and (i % 100 == 0 or i == n_images - 1):
-            print(f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
+            print(
+                f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
 
     # Iterate through each resolution level (s0, s1, s2, ...)
     for level in range(1, max_level + 1):
         # Name the group for this level (e.g., "s0", "s1", "s2", ...)
         group_name = f"s{level}"
-        level_shape = (max(1, n_images//(2**level)), max(1, dimy//(2**level)), max(1, dimx//(2**level)))
+        level_shape = (max(1, n_images//(2**level)),
+                       max(1, dimy//(2**level)), max(1, dimx//(2**level)))
         # Create the Zarr array for the current resolution level (group)
-        zarr_array = zarr_top_level.create_array(group_name, shape=level_shape, dtype=outtype, chunks=chunk_shape, compressors=codec)
-        zarr_array[:] = block_reduce(zarr_array_s0[:], block_size=(2**level, 2**level, 2**level), func=np.mean)
+        zarr_array = zarr_top_level.create_array(
+            group_name, shape=level_shape, dtype=outtype, chunks=chunk_shape, compressors=codec)
+        zarr_array[:] = block_reduce(zarr_array_s0[:], block_size=(
+            2**level, 2**level, 2**level), func=np.mean)
         # Use Dask for efficient downsampling
+
         def block_reduce_block(block):
             return block_reduce(block, block_size=(2**level, 2**level, 2**level), func=np.mean)
-        #zarr_da = da.from_zarr(zarr_array_s0)
-        #reduced = da.map_blocks(block_reduce_block, zarr_da, dtype=zarr_da.dtype)
-        #zarr_array[:] = reduced.compute()
+        # zarr_da = da.from_zarr(zarr_array_s0)
+        # reduced = da.map_blocks(block_reduce_block, zarr_da, dtype=zarr_da.dtype)
+        # zarr_array[:] = reduced.compute()
     if verbose:
         print(f"Neuroglancer Zarr pyramid written to {zarrFile}")
-
 
 
 if __name__ == '__main__':
@@ -710,7 +760,6 @@ if __name__ == '__main__':
     elif ARG.float16:
         output_dtype = np.float16
 
-    
     if ARG.ome:
         writeOMEZarr(
             ARG.inputTifFiles,
@@ -753,15 +802,16 @@ if __name__ == '__main__':
     print()
     print(colored("==== Conversion Summary ====", "cyan"))
     print(f"Input TIFF stack: {tiff_total_size/1e6:.2f} MB")
-    print(f"Stack details: {n_images} TIFF files, shape={dimy}×{dimx}, dtype={tif_dtype}")
+    print(
+        f"Stack details: {n_images} TIFF files, shape={dimy}×{dimx}, dtype={tif_dtype}")
     print(f"Output Zarr store: {zarr_total_size/1e6:.2f} MB")
     if tiff_total_size > 0:
         ratio = zarr_total_size / tiff_total_size
-        print(f"Compression ratio: {ratio:.3f}x ({(1 - ratio)*100:.1f}% smaller)")
+        print(
+            f"Compression ratio: {ratio:.3f}x ({(1 - ratio)*100:.1f}% smaller)")
     print(f"Total time: {format_time(total_time)}")
     n_images = len(ARG.inputTifFiles)
     print(f"Average per frame: {total_time / n_images:.3f} s")
     throughput = (tiff_total_size / 1e6) / total_time if total_time > 0 else 0
     print(f"Effective throughput: {throughput:.2f} MB/s")
     print("=============================")
-
