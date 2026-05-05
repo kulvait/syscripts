@@ -12,6 +12,7 @@ from termcolor import colored
 import argparse
 import glob
 import os
+import sys
 import errno
 import sys
 import h5py
@@ -24,8 +25,8 @@ import numpy as np
 import pandas as pd
 
 parser = argparse.ArgumentParser()
-parser.add_argument("inputH5", help="H5 file with dataset information")
-parser.add_argument("outputProjectionMatrices", help="H5 file with dataset information")
+parser.add_argument("inputGeometryInfo", help="H5 file with dataset information, or DEN tick file with dataset information")
+parser.add_argument("outputProjectionMatrices", help="DEN file to store projection matrices")
 parser.add_argument("--rotation-center-offset", default=0.0, help="Offset of the rotation center, defaults to 0")
 parser.add_argument("--detector-center-offsetvx", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
 parser.add_argument("--detector-center-offsetvy", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
@@ -59,10 +60,29 @@ parser.add_argument("--write-params-file", action="store_true")
 parser.add_argument('--_json-message', default="Created using KCT script createCameraMatricesForCircularScanTrajectoryParallelRay3D.py", help=argparse.SUPPRESS)
 ARG = parser.parse_args()
 
+zdim = None
+inputIsDEN = False
+h5 = None
+tickArray = None
+df = None
+
+if not  os.path.isfile(ARG.inputGeometryInfo):
+	print(f"Error: file not found: {ARG.inputGeometryInfo}", file=sys.stderr)
+	sys.exit(-1)
+
+try:
+	DEN.readHeader(ARG.inputGeometryInfo)
+	tickArray = DEN.getNumpyArray(ARG.inputGeometryInfo)
+	inputIsDEN = True
+	zdim = tickArray.shape[1]
+except TypeError as e:
+	h5 = h5py.File(ARG.inputGeometryInfo, 'r')
+	inputIsDEN = False
+
 if ARG.log_file:
 	sys.stdout = open(ARG.log_file, "wt")
 
-if ARG.fix_corrupted_h5:
+if ARG.fix_corrupted_h5 or inputIsDEN:
 	if ARG.input_file is not None:
 		header = DEN.readHeader(ARG.input_file)
 		if len(header["dimspec"]) != 3:
@@ -70,15 +90,23 @@ if ARG.fix_corrupted_h5:
 		dimspec = header["dimspec"]
 		detector_sizex = np.uint32(dimspec[0])
 		detector_sizey = np.uint32(dimspec[1])
-		zdim = np.uint32(dimspec[2])
+		if zdim is not None and zdim != dimspec[2]:
+			raise TypeError("Number of projections in %s is %d but according to TICK file it is %d!"%(arg.input_file, dimspec[2], zdim))
 	else:
 		raise ValueError("Input file must be specified to fix corrupted h5 file.")
 
 try:
-	if ARG.override_magnification is not None:
-		df = PETRA.imageDataset(ARG.inputH5, includePixelShift=True, overrideMagnification=float(ARG.override_magnification))
+	if inputIsDEN:
+		dat = {
+			"frame_ind":np.arange(zdim, dtype=np.int64),
+			"s_rot":tickArray[0],
+			"pixel_shift":tickArray[1]
+		}
+		df = pd.DataFrame(dat)
+	elif ARG.override_magnification is not None:
+		df = PETRA.imageDataset(ARG.inputGeometryInfo, includePixelShift=True, overrideMagnification=float(ARG.override_magnification))
 	else:
-		df = PETRA.imageDataset(ARG.inputH5, includePixelShift=True)
+		df = PETRA.imageDataset(ARG.inputGeometryInfo, includePixelShift=True)
 except Exception as e:
 	print(colored("Error: %s"%e, "red"))
 	if ARG.fix_corrupted_h5:
@@ -88,7 +116,6 @@ except Exception as e:
 	else:
 		sys.exit(1)
 
-h5 = h5py.File(ARG.inputH5, 'r')
 
 #Solution from https://stackoverflow.com/a/55114771
 def checkFileExistence(f):
@@ -109,21 +136,27 @@ if ARG.write_params_file:
 	checkFileExistence(paramsFile)
 	paramsFile="%s.params"%(ARG.outputProjectionMatrices)
 
-if "/entry/hardware/camera1" in h5: 
-	cam = "camera1"
-elif "/entry/hardware/camera" in h5: 
-	cam = "camera"
+if h5 is not None:
+	if "/entry/hardware/camera1" in h5: 
+		cam = "camera1"
+	elif "/entry/hardware/camera" in h5: 
+		cam = "camera"
+	else:
+		raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."%info["h5"])
+	pix_sizecam = float(h5["entry/hardware/%s/pixelsize"%cam][0])
+	overrideMagnification = ARG.override_magnification
+	if overrideMagnification is not None:
+		pix_sizemag = float(overrideMagnification)
+	else:
+		pix_sizemag = float(h5["entry/hardware/%s/magnification"%cam][0])
+	default_pixel_size = float(pix_sizecam/pix_sizemag)
+	default_detector_sizex = int(h5["entry/hardware/%s/sensorsize_x"%cam][0])
+	default_detector_sizey = int(h5["entry/hardware/%s/sensorsize_y"%cam][0])
 else:
-	raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."%info["h5"])
-pix_sizecam = float(h5["entry/hardware/%s/pixelsize"%cam][0])
-overrideMagnification = ARG.override_magnification
-if overrideMagnification is not None:
-	pix_sizemag = float(overrideMagnification)
-else:
-	pix_sizemag = float(h5["entry/hardware/%s/magnification"%cam][0])
-default_pixel_size = float(pix_sizecam/pix_sizemag)
-default_detector_sizex = int(h5["entry/hardware/%s/sensorsize_x"%cam][0])
-default_detector_sizey = int(h5["entry/hardware/%s/sensorsize_y"%cam][0])
+	#Default values if there is no h5 file, or it is corrupted and we cannot read it
+	default_pixel_size = 1.0
+	default_detector_sizex = detector_sizex * ARG.bin_x
+	default_detector_sizey = detector_sizey * ARG.bin_y
 
 
 #If there is nothing else specified
@@ -180,15 +213,20 @@ if ARG.rotation_center_file is not None:
 	for x in rcf.readlines():
 		if re.search("^rotation_center_offset=", x):
 			rotation_center_offset = float(x.rsplit("=",1)[1])
+		if re.search("^rotation_center_offset_pix=", x):
+			rotation_center_offset_pix = float(x.rsplit("=",1)[1])
+			rotation_center_offset = rotation_center_offset_pix * default_pixel_size
+		# If this value is found and there is no ARG.rotation_center_file_fit_y rotation_center_offset_pix_interp will be used
+		if re.search("^rotation_center_offset_pix_interp=", x):
+			rotation_center_offset_pix_interp = float(x.rsplit("=",1)[1])
+			rotation_center_offset = rotation_center_offset_pix_interp * default_pixel_size
+			if ARG.rotation_center_file_fit_y is None:
+				break
 		if re.search("^rotation_center_offset_interpfit_a=", x):
 			rotation_center_offset_interpfit_a = float(x.rsplit("=",1)[1])
 		if re.search("^rotation_center_offset_interpfit_b=", x):
 			rotation_center_offset_interpfit_b = float(x.rsplit("=",1)[1])
-#		if re.search("^rotation_center_offset_pix=", x):
-#			rotation_center_offset_pix = float(x.rsplit("=",1)[1])
-#			rotation_center_offset = rotation_center_offset_pix * default_pixel_size
-#			break
-	if rotation_center_offset_interpfit_b is not None and ARG.rotation_center_file_fit_y is not None:
+	if rotation_center_offset_interpfit_a is not None and rotation_center_offset_interpfit_b is not None and ARG.rotation_center_file_fit_y is not None:
 		a = rotation_center_offset_interpfit_a
 		b = rotation_center_offset_interpfit_b
 		y = ARG.rotation_center_file_fit_y

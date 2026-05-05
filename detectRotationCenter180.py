@@ -28,6 +28,7 @@ from pathlib import Path
 from skimage.registration import phase_cross_correlation
 import zarr
 import shutil
+import logging
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
