@@ -301,7 +301,7 @@ if ARG.inverted_pixshifts:
 df["pixel_shift"] = pixShifts
 #Now I estimate low and high limits of the shifts and subtract maximum from each side
 #Maximum is there in order to keep center at the same position but it might induce lot of interpolation
-sinogram_center_offset = 0.0
+sinogram_center_correction = 0.0
 if ARG.load_sinograms is not None:
 	info = DEN.readHeader(ARG.load_sinograms)
 	if len(info["dimspec"]) != 3:
@@ -336,6 +336,7 @@ elif ARG.center_implementation:
 		sinograms = sinograms[:, :, drop:-drop]
 else:
 	#New implementation
+	#In wackle scan we compute detector coordinates with respect to the detector starting at (0,0) equal to pixShifts.min()
 	pixShifts = pixShifts - pixShifts.min()
 	df["pixel_shift"] = pixShifts
 	maxshift = pixShifts.max()
@@ -346,10 +347,10 @@ else:
 	if maxintshift >= xdim:
 		raise ValueError("maxintshift >= xdim %d >=%d"%(maxintshift, xdim))
 	if abs(maxshift-maxintshift) > 0.01 :
-		sinogram_center_offset = 0.5*(maxintshift - maxshift)
+		sinogram_center_correction = 0.5*(maxintshift - maxshift)
 	if ARG.verbose:
 		print("maxshift=%f, maxintshift=%d, additionalCenterOffset=%f" %
-			  (maxshift, maxintshift, sinogram_center_offset))
+			  (maxshift, maxintshift, sinogram_center_correction))
 	for k in range(len(angleSequence)):
 		theta = angleSequence[k]
 		frame = getInterpolatedFrameNew(ARG.inputFile, theta, df, xdim_reduced)
@@ -883,9 +884,9 @@ fittable=np.zeros([len(ySequence),5])
 for j in range(len(ySequence)):
 	fittable[j, 0] = ySequence[j]
 	fittable[j, 1] = offsets[j]
-	fittable[j, 2] = (offsets[j]+sinogram_center_offset) * pix_size
+	fittable[j, 2] = (offsets[j]+sinogram_center_correction) * pix_size
 	fittable[j, 3] = interpoffsets[j]
-	fittable[j, 4] = (interpoffsets[j]+sinogram_center_offset) * pix_size
+	fittable[j, 4] = (interpoffsets[j]+sinogram_center_correction) * pix_size
 stdoffset = offsets.std()
 stdmedian = np.nanmedian(offsets)
 fittable = fittable[np.abs(fittable[:,1]-stdmedian)< 2*stdoffset]
@@ -907,11 +908,11 @@ if fittable.shape[0] > 3:
 		print("rotation_center_offset_interpfit_b=%s"%(b))
 
 if ARG.load_sinograms is None and not ARG.center_implementation:
-	print("sinogram_center_offset_pix=%f" % (sinogram_center_offset))
+	print("sinogram_center_correction_pix=%f" % (sinogram_center_correction))
 #Offset with respect to the coordinates relative to the center of  [0, N + max_pix_shift-min_pix_shift]
 if ARG.input_tick is None:
-	print("rotation_center_offset=%s" % ((offset+sinogram_center_offset) * pix_size))
-	print("rotation_center_offset_interp=%s" % ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
+	print("rotation_center_offset=%s" % ((offset+sinogram_center_correction) * pix_size))
+	print("rotation_center_offset_interp=%s" % ((sinogram_center_correction + np.nanmedian(interpoffsets)) * pix_size))
 if ARG.log_file:
 	sys.stdout.close()
 	sys.stdout = sys.__stdout__

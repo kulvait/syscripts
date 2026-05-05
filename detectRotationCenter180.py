@@ -1,13 +1,11 @@
 #!/usr/bin/env python
 """
-Created 2023
 
 @author: Vojtech Kulvait
 
+2023 - 2026
+
 Tries to detect rotation center based on input extinction data
-
-
-This script processes data to get volume information from the two consequent volumes that goes next to each other
 """
 
 import argparse
@@ -30,6 +28,21 @@ from pathlib import Path
 from skimage.registration import phase_cross_correlation
 import zarr
 import shutil
+
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
+# Create a logger specific to this module
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO) # Set the logging level to INFO
+# Create a console handler and set its level to INFO
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+# Create a formatter and set it for the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s:%(lineno)d - %(levelname)s : %(message)s', datefmt='%d.%m.%Y %H:%M:%S')
+ch.setFormatter(formatter)
+# Add the handler to the logger
+log.addHandler(ch)
+log.propagate = False # Prevent log messages from being propagated to the root logger
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
@@ -130,7 +143,7 @@ if ARG.log_file:
 
 #Compute pix size
 pix_size = 1.0
-if ARG.input_tick is None:
+if ARG.input_h5 is not None:
 	h5 = h5py.File(ARG.input_h5, 'r')
 	if "/entry/hardware/camera1" in h5:
 		cam = "camera1"
@@ -148,6 +161,42 @@ if ARG.input_tick is None:
 	pix_size = float(pix_size_cam / pix_size_mag)
 print("default_pix_size=%s"%(pix_size))
 
+header = DEN.readHeader(ARG.inputFile)
+if len(header["dimspec"]) != 3:
+	raise TypeError("Dimension of dimspec for file %s shall be 3 but is %d!" %
+					(arg.inputFile, len(header["dimspec"])))
+dimspec = header["dimspec"]
+xdim = np.uint32(dimspec[0])
+ydim = np.uint32(dimspec[1])
+zdim = np.uint32(dimspec[2])
+
+if ARG.input_tick is not None:
+	dat = DEN.getNumpyArray(ARG.input_tick)
+	data = {"frame_ind":np.arange(zdim, dtype=np.int64),
+			"s_rot":dat[0],
+			"pixel_shift":dat[1]}
+	df = pd.DataFrame(data)
+elif ARG.input_h5 is not None:
+	try:
+		df = PETRA.imageDataset(ARG.input_h5, includePixelShift=True, overrideMagnification=ARG.override_magnification)
+	except Exception as e:
+		if ARG.fix_corrupted_h5:
+			print("Error in reading H5 file %s, trying to fix it."%(ARG.input_h5))
+			data = {"frame_ind":np.arange(zdim, dtype=np.int64),
+					"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),
+					"pixel_shift":np.zeros(zdim)}
+			df = pd.DataFrame(data)
+		else:
+			raise e
+elif ARG.input_linspace:
+	data = {"frame_ind":np.arange(zdim, dtype=np.int64),
+			"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),
+			"pixel_shift":np.zeros(zdim)}
+	df = pd.DataFrame(data)
+
+df["frame_ind"] = df["frame_ind"].astype(int) #Make sure frame_ind is of integer type for indexing
+
+
 
 def correlation2d_estimate_COR(proj0: np.ndarray, proj180: np.ndarray) -> float:
 	"""
@@ -158,12 +207,13 @@ def correlation2d_estimate_COR(proj0: np.ndarray, proj180: np.ndarray) -> float:
 	# Flip the 180° projection horizontally
 	proj180_flipped = np.fliplr(proj180)
 	# Compute 2D subpixel shift between the two projections
+	# Returns Shift vector (in pixels) required to register proj180_flipped with proj0. Axis ordering is consistent with the axis order of the input array.
 	shift, _, _ = phase_cross_correlation(
 		proj0, 
 		proj180_flipped, 
-		upsample_factor=20	# higher gives better subpixel precision
+		upsample_factor=20# higher gives better subpixel precision
 	)
-	dx = shift[1]	 # horizontal shift only
+	dx = shift[1] # horizontal shift only
 	# COR shift is half the projection misalignment
 	center_offset = dx / 2.0
 	W = proj0.shape[1]
@@ -316,12 +366,12 @@ def getAveragedFrames(inputFile, theta, delta_theta_rad, df, xdim_reduced):
 	# Initialize the result frame
 		# Initialize avg_frame from the first frame
 	first_row = frames_in_range.iloc[0]
-	avg_frame = shiftAndReduceFrameFloat(DEN.getFrame(inputFile, first_row["frame_ind"]),
-										 first_row["pixel_shift"], xdim_reduced)
+	avg_frame = shiftAndReduceFrameFloat(DEN.getFrame(inputFile, frames_in_range["frame_ind"].iat[0]),
+										 frames_in_range["pixel_shift"].iat[0], xdim_reduced)
 	# Average remaining frames within the range
-	for idx, row in frames_in_range.iloc[1:].iterrows():
-		frame = shiftAndReduceFrameFloat(DEN.getFrame(inputFile, row["frame_ind"]),
-										 row["pixel_shift"], xdim_reduced)
+	for idx in range(1, len(frames_in_range)):
+		frame = shiftAndReduceFrameFloat(DEN.getFrame(inputFile, frames_in_range["frame_ind"].iat[idx]),
+										 frames_in_range["pixel_shift"].iat[idx], xdim_reduced)
 		avg_frame += frame
 	# Normalize by the number of frames
 	avg_frame /= len(frames_in_range)
@@ -382,14 +432,6 @@ def getInterpolatedFrame(inputFile, df, angle):
 	return f
 
 
-header = DEN.readHeader(ARG.inputFile)
-if len(header["dimspec"]) != 3:
-	raise TypeError("Dimension of dimspec for file %s shall be 3 but is %d!" %
-					(arg.inputFile, len(header["dimspec"])))
-dimspec = header["dimspec"]
-xdim = np.uint32(dimspec[0])
-ydim = np.uint32(dimspec[1])
-zdim = np.uint32(dimspec[2])
 
 #Equaly spaced Y indices
 if ARG.sample_count < 1 or ARG.sample_count > ydim:
@@ -403,29 +445,6 @@ if ARG.sample_count == ydim:
 if ARG.angle_count < 1:
 	raise ValueError("Invalid angle_count=%d" % ARG.angle_count)
 
-if ARG.input_tick is not None:
-	dat = DEN.getNumpyArray(ARG.input_tick)
-	data = {"frame_ind":np.arange(zdim),
-			"s_rot":dat[0],
-			"pixel_shift":dat[1]}
-	df = pd.DataFrame(data)
-elif ARG.input_h5 is not None:
-	try:
-		df = PETRA.imageDataset(ARG.input_h5, includePixelShift=True, overrideMagnification=ARG.override_magnification)
-	except Exception as e:
-		if ARG.fix_corrupted_h5:
-			print("Error in reading H5 file %s, trying to fix it."%(ARG.input_h5))
-			data = {"frame_ind":np.arange(zdim),
-					"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),
-					"pixel_shift":np.zeros(zdim)}
-			df = pd.DataFrame(data)
-		else:
-			raise e
-elif ARG.input_linspace:
-	data = {"frame_ind":np.arange(zdim),
-			"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),
-			"pixel_shift":np.zeros(zdim)}
-	df = pd.DataFrame(data)
 
 pixShifts = df["pixel_shift"].copy()
 rangeShifts = df["pixel_shift"].max()-df["pixel_shift"].min()
@@ -468,8 +487,6 @@ if maxAngle < maxTestAngle:
 	angleSequence = angleSequence[:optimalAngleCount]
 	maxTestAngle=angleSequence[-1]
 
-sinogram_center_offset = 0.0
-
 
 #Do some rough estimation based on few angles
 delta_theta_rad = 5.0 * pix_size # This means +-5 pixels around given angle
@@ -478,10 +495,12 @@ frame180 = getAveragedFrames(ARG.inputFile, 180, delta_theta_rad, df, xdim_reduc
 if frame0 is not None and frame180 is not None:
 	estimated_COR = correlation2d_estimate_COR(frame0, frame180)
 	detector_center = 0.5 * (xdim - 1)
-	sinogram_center_offset = estimated_COR - detector_center
-	print(f"Estimated global COR={estimated_COR:.2f} pixels, detector center={detector_center:.2f} pixels, sinogram_center_offset={sinogram_center_offset:.2f} pixels", flush=True)
-	print("global_rotation_center_offset_pix=%f"%(sinogram_center_offset), flush=True)
-	print("global_rotation_center_offset=%f"%(sinogram_center_offset*pix_size), flush=True)
+	global_rotation_center_offset_pix = estimated_COR - detector_center
+	print(f"Estimated global COR={estimated_COR:.2f} pixels, detector center={detector_center:.2f} pixels", flush=True)
+	print("global_rotation_center_offset_pix=%f"%(global_rotation_center_offset_pix), flush=True)
+	print("global_rotation_center_offset=%f"%(global_rotation_center_offset_pix*pix_size), flush=True)
+
+sinogram_center_correction = 0.0
 
 if ARG.load_sinograms is not None:
 	info = DEN.readHeader(ARG.load_sinograms)
@@ -505,7 +524,7 @@ if ARG.load_sinograms is not None:
 		if maxintshift >= xdim:
 			raise ValueError("maxintshift >= xdim %d >=%d"%(maxintshift, xdim))
 		if abs(maxshift-maxintshift) > 0.01 :
-			sinogram_center_offset = 0.5*(maxintshift - maxshift)
+			sinogram_center_correction = 0.5*(maxintshift - maxshift)
 elif ARG.center_implementation:
 	sinograms = np.zeros([ARG.sample_count, len(angleSequence), xdim_reduced],
 					 dtype=np.float32)
@@ -526,27 +545,66 @@ elif ARG.center_implementation:
 	if drop != 0:
 		sinograms = sinograms[:, :, drop:-drop]
 else:
-	#New implementation
+	# Each projection k has its own detector coordinate system with origin 0_k.
+	# We only know relative offsets between detectors:
+	#     0_k - 0_j = pix_shift_k - pix_shift_j
+	#
+	# To unify all projections, we introduce a global coordinate system by
+	# choosing the detector with the smallest shift as reference (global origin).
+	# This makes all shifts non-negative:
+	#     0_k -> pix_shift_k - min(pix_shift)
+	#
+	# In this global system, projection k spans:
+	#     [pix_shift_k, pix_shift_k + xdim)
+	#
+	# The common valid region across all projections is the intersection of
+	# these intervals, which has width:
+	#     xdim_reduced = xdim - ceil(max(pix_shift))
+	#
+	# This corresponds to applying integer alignment via cropping, while
+	# any remaining subpixel misalignment is handled separately.
 	pixShifts = pixShifts - pixShifts.min()
 	df["pixel_shift"] = pixShifts
 	maxshift = pixShifts.max()
 	maxintshift = int(maxshift + 0.99)
+	# The region that is valid for *all* projections is the intersection of
+	# these intervals. Because the shifts span [0, maxintshift], this common
+	# region is the central strip of width:
 	xdim_reduced = xdim - maxintshift
 	sinograms = np.zeros([ARG.sample_count, len(angleSequence), xdim_reduced],
 					 dtype=np.float32)
 	if maxintshift >= xdim:
 		raise ValueError("maxintshift >= xdim %d >=%d"%(maxintshift, xdim))
 	if abs(maxshift-maxintshift) > 0.01 :
-		sinogram_center_offset = 0.5*(maxintshift - maxshift)
+		# Using integer shifts (maxintshift) instead of the true maximal shift (maxshift)
+		# slightly changes the effective global coordinate system.
+		#
+		# The true extent of all projections is:
+		#     [0, xdim + maxshift]
+		# while the integer-aligned construction assumes:
+		#     [0, xdim + maxintshift]
+		#
+		# These intervals have different centers:
+		#     true center    = 0.5 * (xdim + maxshift - 1)
+		#     integer center = 0.5 * (xdim + maxintshift - 1)
+		#
+		# The difference between these centers is:
+		#     0.5 * (maxintshift - maxshift)
+		#
+		# This offset is stored in `sinogram_center_correction` and compensates
+		# for the subpixel error introduced by rounding shifts to integers.
+		sinogram_center_correction = 0.5*(maxintshift - maxshift)
 	if ARG.verbose:
 		print("maxshift=%f, maxintshift=%d, additionalCenterOffset=%f" %
-			  (maxshift, maxintshift, sinogram_center_offset))
+			  (maxshift, maxintshift, sinogram_center_correction))
 	for k in range(len(angleSequence)):
 		theta = angleSequence[k]
 		frame = getInterpolatedFrameNew(ARG.inputFile, theta, df, xdim_reduced)
 		for j in range(len(ySequence)):
 			sinograms[j, k] = frame[ySequence[j]]
 
+if sinogram_center_correction != 0.0:
+	log.warning("Nonzero subpixel shift correction applied to sinogram: %f" % sinogram_center_correction)
 
 if ARG.store_sinograms is not None:
 	outpath = Path(ARG.store_sinograms)
@@ -1008,19 +1066,27 @@ for j in range(len(ySequence)):
 				"For j=%d y=%d the center of symmetry offset %.1f or double shift %d corresponds to J=%d  and centerOffset=%.1f"
 				% (j, ySequence[j], centerOffset + 0.5 * J,
 				   -J - 2 * centerOffset, J, centerOffset))
-offset = np.nanmedian(offsets)
-#Formatting as string shall give the full precision
-print("rotation_center_offset_pix=%s" % (offset))
-print("rotation_center_offset_pix_interp=%s" % (np.nanmedian(interpoffsets)))
-#Create fit
 
+if sinogram_center_correction != 0:
+	print("SINOGRAM_CENTER_CORRECTION=%f pixels, %f mm"%(sinogram_center_correction, sinogram_center_correction*pix_size))
+#Formatting as string shall give the full precision
+rotation_center_offset_pix = np.nanmedian(offsets) + sinogram_center_correction
+rotation_center_offset_pix_interp = np.nanmedian(interpoffsets) + sinogram_center_correction
+rotation_center_offset = rotation_center_offset_pix * pix_size
+rotation_center_offset_interp = rotation_center_offset_pix_interp * pix_size
+print("rotation_center_offset_pix=%s" % (rotation_center_offset_pix))
+print("rotation_center_offset_pix_interp=%s" % (rotation_center_offset_pix_interp))
+print("rotation_center_offset=%s" % (rotation_center_offset))
+print("rotation_center_offset_interp=%s" % (rotation_center_offset_interp))
+
+#Create fit
 fittable=np.zeros([len(ySequence),5])
 for j in range(len(ySequence)):
 	fittable[j, 0] = ySequence[j]
-	fittable[j, 1] = offsets[j]
-	fittable[j, 2] = (offsets[j]+sinogram_center_offset) * pix_size
-	fittable[j, 3] = interpoffsets[j]
-	fittable[j, 4] = (interpoffsets[j]+sinogram_center_offset) * pix_size
+	fittable[j, 1] = offsets[j] + sinogram_center_correction
+	fittable[j, 2] = (offsets[j]+sinogram_center_correction) * pix_size
+	fittable[j, 3] = interpoffsets[j] + sinogram_center_correction
+	fittable[j, 4] = (interpoffsets[j]+sinogram_center_correction) * pix_size
 
 # Calculate the Median Absolute Deviation (MAD)
 def mad(data):

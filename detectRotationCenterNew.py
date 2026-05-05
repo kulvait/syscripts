@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """
 Detects rotation center based on input extinction data. 
-Output is the position of the rotation center with respect to center of the sinogram plus sinogram_center_offset.
+Output is the position of the rotation center with respect to center of the sinogram plus sinogram_center_correction.
 
 @author: Vojtech Kulvait
-@year: 2023-2024
+@year: 2023-2026
 
 This script processes data to get volume information from the two consequent volumes that goes next to each other
 """
@@ -32,7 +32,19 @@ from scipy.signal import convolve2d
 from numpy.fft import fft, ifft
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-log = logging.getLogger("detectRotationCenterNew")
+
+# Create a logger specific to this module
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO) # Set the logging level to INFO
+# Create a console handler and set its level to INFO
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+# Create a formatter and set it for the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s:%(lineno)d - %(levelname)s : %(message)s', datefmt='%d.%m.%Y %H:%M:%S')
+ch.setFormatter(formatter)
+# Add the handler to the logger
+log.addHandler(ch)
+log.propagate = False # Prevent log messages from being propagated to the root logger
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
@@ -354,7 +366,7 @@ if ARG.inverted_pixshifts:
 df["pixel_shift"] = pixShifts
 #Now I estimate low and high limits of the shifts and subtract maximum from each side
 #Maximum is there in order to keep center at the same position but it might induce lot of interpolation
-sinogram_center_offset = 0.0
+sinogram_center_correction = 0.0
 if ARG.load_sinograms is not None:
 	info = DEN.readHeader(ARG.load_sinograms)
 	if len(info["dimspec"]) != 3:
@@ -388,30 +400,69 @@ elif ARG.center_implementation:
 	if drop != 0:
 		sinograms = sinograms[:, :, drop:-drop]
 else:
-	#New implementation
+	# Each projection k has its own detector coordinate system with origin 0_k.
+	# We only know relative offsets between detectors:
+	#     0_k - 0_j = pix_shift_k - pix_shift_j
+	#
+	# To unify all projections, we introduce a global coordinate system by
+	# choosing the detector with the smallest shift as reference (global origin).
+	# This makes all shifts non-negative:
+	#     0_k -> pix_shift_k - min(pix_shift)
+	#
+	# In this global system, projection k spans:
+	#     [pix_shift_k, pix_shift_k + xdim)
+	#
+	# The common valid region across all projections is the intersection of
+	# these intervals, which has width:
+	#     xdim_reduced = xdim - ceil(max(pix_shift))
+	#
+	# This corresponds to applying integer alignment via cropping, while
+	# any remaining subpixel misalignment is handled separately.
 	pixShifts = pixShifts - pixShifts.min()
 	df["pixel_shift"] = pixShifts
 	maxshift = pixShifts.max()
 	maxintshift = int(maxshift + 0.99)
+	# The region that is valid for *all* projections is the intersection of
+	# these intervals. Because the shifts span [0, maxintshift], this common
+	# region is the central strip of width:
 	xdim_reduced = xdim - maxintshift
-	sinograms = np.zeros([ARG.sample_count, ARG.angle_count, xdim_reduced],
-						 dtype=np.float32)
+	sinograms = np.zeros([ARG.sample_count, len(angleSequence), xdim_reduced],
+					 dtype=np.float32)
 	if maxintshift >= xdim:
-		raise ValueError("maxintshift >= xdim %d >=%d" % (maxintshift, xdim))
-	if abs(maxshift - maxintshift) > 0.01:
-		sinogram_center_offset = 0.5 * (maxintshift - maxshift)
+		raise ValueError("maxintshift >= xdim %d >=%d"%(maxintshift, xdim))
+	if abs(maxshift-maxintshift) > 0.01 :
+		# Using integer shifts (maxintshift) instead of the true maximal shift (maxshift)
+		# slightly changes the effective global coordinate system.
+		#
+		# The true extent of all projections is:
+		#     [0, xdim + maxshift]
+		# while the integer-aligned construction assumes:
+		#     [0, xdim + maxintshift]
+		#
+		# These intervals have different centers:
+		#     true center    = 0.5 * (xdim + maxshift - 1)
+		#     integer center = 0.5 * (xdim + maxintshift - 1)
+		#
+		# The difference between these centers is:
+		#     0.5 * (maxintshift - maxshift)
+		#
+		# This offset is stored in `sinogram_center_correction` and compensates
+		# for the subpixel error introduced by rounding shifts to integers.
+		sinogram_center_correction = 0.5*(maxintshift - maxshift)
 	if ARG.verbose:
 		print("maxshift=%f, maxintshift=%d, additionalCenterOffset=%f" %
-			  (maxshift, maxintshift, sinogram_center_offset))
+			  (maxshift, maxintshift, sinogram_center_correction))
 	for k in range(len(angleSequence)):
 		theta = angleSequence[k]
 		frame = getInterpolatedFrameNew(ARG.inputFile, theta, df, xdim_reduced)
 		for j in range(len(ySequence)):
 			sinograms[j, k] = frame[ySequence[j]]
 
+if sinogram_center_correction != 0.0:
+	log.warning("Nonzero subpixel shift correction applied to sinogram: %f" % sinogram_center_correction)
+
 if ARG.store_sinograms is not None:
 	DEN.storeNdarrayAsDEN(ARG.store_sinograms, sinograms, force=ARG.force)
-
 
 def denoiseGaussian2(vec, lim=1):
 	maxsigma = len(vec) / 10
@@ -900,6 +951,8 @@ if ARG.input_tick is None:
 
 
 
+if sinogram_center_correction != 0:
+	print("SINOGRAM_CENTER_CORRECTION=%f pixels, %f mm"%(sinogram_center_correction, sinogram_center_correction*pix_size))
 print("default_pix_size=%s" % (pix_size))
 admissibleOffsets = (peak_sharpness == 0) | (peak_sharpness > 3.5)
 if sum(admissibleOffsets) == 0:
@@ -916,23 +969,23 @@ else:
 	interpOffset = np.nanmedian(interpoffsets[admissibleOffsets])
 
 #Formatting as string shall give the full precision
-print("rotation_center_offset_pix=%s" % (offset))
-print("rotation_center_offset_pix_interp=%s" % (interpOffset))
+print("rotation_center_offset_pix=%s" % (offset + sinogram_center_correction))
+print("rotation_center_offset_pix_interp=%s" % (interpOffset + sinogram_center_correction))
 if ARG.input_tick is None:
 	print("rotation_center_offset=%s" %
-		  ((offset + sinogram_center_offset) * pix_size))
+		  ((offset + sinogram_center_correction) * pix_size))
 	print("rotation_center_offset_interp=%s" %
-		  ((sinogram_center_offset + np.nanmedian(interpoffsets)) * pix_size))
+		  ((np.nanmedian(interpoffsets) + sinogram_center_correction) * pix_size))
 #Create fit
 
 fittable = np.zeros([0, 5])
 for j in range(len(ySequence)):
 	fitrow = np.zeros([1, 5])
 	fitrow[0, 0] = ySequence[j]
-	fitrow[0, 1] = offsets[j]
-	fitrow[0, 2] = (offsets[j] + sinogram_center_offset) * pix_size
-	fitrow[0, 3] = interpoffsets[j]
-	fitrow[0, 4] = (interpoffsets[j] + sinogram_center_offset) * pix_size
+	fitrow[0, 1] = offsets[j] + sinogram_center_correction
+	fitrow[0, 2] = (offsets[j] + sinogram_center_correction) * pix_size
+	fitrow[0, 3] = interpoffsets[j] + sinogram_center_correction
+	fitrow[0, 4] = (interpoffsets[j] + sinogram_center_correction) * pix_size
 	fittable = np.vstack([fittable, fitrow])
 #	if peak_sharpness[j] == 0 or peak_sharpness[j] > 3.5:
 
@@ -987,7 +1040,7 @@ print("Out %d measurements %d were rejected as outliers"%(len(ySequence), num_ou
 print("Included offsets are %s"%(", ".join(["%0.2f"%x for x in fittable[:,3]])))
 
 if ARG.load_sinograms is None and not ARG.center_implementation:
-	print("sinogram_center_offset_pix=%f" % (sinogram_center_offset))
+	print("sinogram_center_correction_pix=%f" % (sinogram_center_correction))
 #Offset with respect to the coordinates relative to the center of  [0, N + max_pix_shift-min_pix_shift]
 if ARG.log_file:
 	sys.stdout.close()
