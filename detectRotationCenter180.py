@@ -208,13 +208,13 @@ def correlation2d_estimate_COR(proj0: np.ndarray, proj180: np.ndarray) -> float:
 	# Flip the 180° projection horizontally
 	proj180_flipped = np.fliplr(proj180)
 	# Compute 2D subpixel shift between the two projections
-	# Returns Shift vector (in pixels) required to register proj180_flipped with proj0. Axis ordering is consistent with the axis order of the input array.
+	# Returns Shift vector (in pixels) required to shift proj0 so that it aligns with proj180_flipped.
 	shift, _, _ = phase_cross_correlation(
 		proj0, 
 		proj180_flipped, 
 		upsample_factor=20# higher gives better subpixel precision
 	)
-	dx = shift[1] # horizontal shift only
+	dx = -shift[1] # We need negative shift to shift proj180_flipped to proj0
 	# COR shift is half the projection misalignment
 	center_offset = dx / 2.0
 	W = proj0.shape[1]

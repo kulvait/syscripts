@@ -13,7 +13,6 @@ import io
 import os
 import sys
 import shutil
-import pydicom
 import re
 import h5py
 import random
