@@ -932,6 +932,7 @@ for j in range(len(ySequence)):
 	#sinogram = sinogram - sinogram.mean(axis=1, keepdims=True)
 	MIN = 0
 	width = sinogram.shape[1]
+	sinogram_center = 0.5 * width - 0.5
 	if ARG.crop_percent is not None and ARG.crop_percent > 0:
 		crop = int(width * ARG.crop_percent / 100)
 		crop_side = crop // 2
@@ -939,10 +940,10 @@ for j in range(len(ySequence)):
 			raise ValueError("Too much crop, consider value less than 50%, width=%d crop=%d" % (width, crop))
 		sinogram = sinogram[:, crop_side:width - crop_side]
 		width = sinogram.shape[1]
-	entropy = calculate_entropy(sinogram)
-	offset_trig[j] = estimateTrigonometricFit(sinogram)
-	offset_smooth[j] = estimateSmoothFit(sinogram)
 	if ARG.fourier:
+		entropy = calculate_entropy(sinogram)
+		#offset_trig[j] = estimateTrigonometricFit(sinogram)
+		#offset_smooth[j] = estimateSmoothFit(sinogram)
 		COD = 0.5*width - 0.5
 		cor = calculation.find_center_vo(sinogram, radius=5, step=0.1)
 		offsets[j] = cor - COD
@@ -950,7 +951,19 @@ for j in range(len(ySequence)):
 		subpixeloffsets[j] = cor - COD
 		cor = calculation.find_center_vo(sinogram, radius=5, step=0.01)
 		interpoffsets[j] = cor - COD
-		print("j=%d y=%d/%d offsets_default[j]=%0.2f offsets_broad[j]=%0.2f offsets_interp[j]=%0.2f offset_trig[j]=%0.2f offsets_smooth[j]=%0.2f, entropy=%0.2f" % (j, ySequence[j], ydim, offsets[j], subpixeloffsets[j], interpoffsets[j], offset_trig[j], offset_smooth[j], entropy))
+		print("j=%d y=%d/%d offsets_default[j]=%0.2f offsets_broad[j]=%0.2f offsets_interp[j]=%0.2f, entropy=%0.2f" % (j, ySequence[j], ydim, offsets[j], subpixeloffsets[j], interpoffsets[j], entropy))
+	elif ARG.ridge:
+		if ARG.store_sinograms is not None:
+			cache = COR.JsonCache(ARG.store_sinograms + "_cache.json")
+		elif ARG.load_sinograms is not None:
+			cache = COR.JsonCache(ARG.load_sinograms + "_cache.json")
+		else:
+			cache = COR.JsonCache()
+		start_offset = global_rotation_center_offset_pix
+		test_radius = width//16
+		cor = COR.estimate_cor(sinogram, j, angleSequence, start_offset=start_offset, test_radius=test_radius, refinement_steps=15, metric="ridge_sato", apply_log=False, cache=cache, verbose=ARG.verbose)
+		offsets[j] = cor - sinogram_center
+		print("j=%d y=%d/%d offset[j]=%0.2f" % (j, ySequence[j], ydim, offsets[j]))
 	elif ARG.svd:
 		print("SVD j=%d y=%d" % (j, ySequence[j]))
 		offsets[j] = svdAnalyze(sinogram)
@@ -1085,9 +1098,9 @@ fittable=np.zeros([len(ySequence),5])
 for j in range(len(ySequence)):
 	fittable[j, 0] = ySequence[j]
 	fittable[j, 1] = offsets[j] + sinogram_center_correction
-	fittable[j, 2] = (offsets[j]+sinogram_center_correction) * pix_size
+	fittable[j, 2] = (offsets[j] + sinogram_center_correction) * pix_size
 	fittable[j, 3] = interpoffsets[j] + sinogram_center_correction
-	fittable[j, 4] = (interpoffsets[j]+sinogram_center_correction) * pix_size
+	fittable[j, 4] = (interpoffsets[j] + sinogram_center_correction) * pix_size
 
 # Calculate the Median Absolute Deviation (MAD)
 def mad(data):
