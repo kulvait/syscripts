@@ -43,14 +43,8 @@ parser.add_argument("--pixel-sizex", default=None, type=float, help="Pixel size 
 parser.add_argument("--pixel-sizey", default=None, type=float, help="Pixel size y to use for projection geometry.")
 parser.add_argument("--detector-sizex", default=None, help="If there is input file, this is ignored and dimx used instead")
 parser.add_argument("--detector-sizey", default=None, help="If there is input file, this is ignored and dimy used instead")
-parser.add_argument("--bin-x",
-                    type=int,
-                    default=1,
-                    help="X dimension of binning box, pixel size will be multiplied by this factor and default detector size is adjusted accordingly.")
-parser.add_argument("--bin-y",
-                    type=int,
-                    default=1,
-                    help="Y dimension of binning box, pixel size will be multiplied by this factor and default detector size is adjusted accordingly.")
+parser.add_argument("--bin-x", type=int, default=1, help="X dimension of binning box, pixel size will be multiplied by this factor and default detector size is adjusted accordingly.")
+parser.add_argument("--bin-y", type=int, default=1, help="Y dimension of binning box, pixel size will be multiplied by this factor and default detector size is adjusted accordingly.")
 parser.add_argument("--input-file", default=None, help="DEN file with projections to create corresponding projection matrices, if there is not detector size information, nor input file specified, dimensions of the camera from h5 file are used instead.")
 parser.add_argument("--material-ct-convention", action="store_true", help="The z axis direction and PY direction will coincide, that is usually not the case in medical CT praxis. See also https://kulvait.github.io/KCT_doc/posts/tomographic-notes-1-geometric-conventions.html.")
 parser.add_argument("--flat-matrices", help="Create 1D projection matrices.", action="store_true")
@@ -139,8 +133,8 @@ def checkFileExistence(f):
 
 checkFileExistence(ARG.outputProjectionMatrices)
 if ARG.write_params_file:
-	checkFileExistence(paramsFile)
 	paramsFile="%s.params"%(ARG.outputProjectionMatrices)
+	checkFileExistence(paramsFile)
 
 if h5 is not None:
 	if "/entry/hardware/camera1" in h5: 
@@ -372,7 +366,7 @@ else:
 		CM.shape=(1,2,4)
 		CameraMatrices = np.concatenate((CameraMatrices, CM))
 
-DEN.storeNdarrayAsDEN(ARG.outputProjectionMatrices, CameraMatrices, ARG.force)
+DEN.storeNdarrayAsDEN(ARG.outputProjectionMatrices, CameraMatrices, force=ARG.force)
 
 if ARG.write_params_file:
 	with open(paramsFile, 'w') as f:
