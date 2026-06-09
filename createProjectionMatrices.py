@@ -27,12 +27,18 @@ import pandas as pd
 parser = argparse.ArgumentParser()
 parser.add_argument("inputGeometryInfo", help="H5 file with dataset information, or DEN tick file with dataset information")
 parser.add_argument("outputProjectionMatrices", help="DEN file to store projection matrices")
-parser.add_argument("--rotation-center-offset", default=0.0, help="Offset of the rotation center, defaults to 0")
-parser.add_argument("--detector-center-offsetvx", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
-parser.add_argument("--detector-center-offsetvy", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
-parser.add_argument("--rotation-center-file", default=None, help="Use value stored in file to determine rotation center")
+
+#Position of the rotation center can be specified in three mutually exclusive ways, if there is no specification, it is assumed to be 0.0
+groupOffset = parser.add_mutually_exclusive_group()
+groupOffset.add_argument("--rotation-center-offset", default=None, help="Offset of the rotation center, defaults to 0.0.", type=float)
+groupOffset.add_argument("--rotation-center-offset-pix", default=None, help="Offset of the rotation center in pixels after binning, defaults to 0.0.", type=float)
+groupOffset.add_argument("--rotation-center-file", default=None, help="Use value stored in file to determine rotation center")
 parser.add_argument("--rotation-center-file-fit-y", default=None, type=float, help="Perform interpolation fit")
 parser.add_argument("--rotation-center-file-fitted-matrix", action="store_true", help="Create skewed projection matrix based on fit data")
+
+
+parser.add_argument("--detector-center-offsetvx", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
+parser.add_argument("--detector-center-offsetvy", type=float, default=0., help="Offset of the center of the detector, detector_center_offsetvx * VX + detector_center_offsetvy * VY is added to the coordinates of the center of the detector for each angle, defaults to 0.0.")
 parser.add_argument("--pixel-sizex", default=None, type=float, help="Pixel size x to use for projection geometry.")
 parser.add_argument("--pixel-sizey", default=None, type=float, help="Pixel size y to use for projection geometry.")
 parser.add_argument("--detector-sizex", default=None, help="If there is input file, this is ignored and dimx used instead")
@@ -168,6 +174,7 @@ if ARG.pixel_sizey is not None:
 	pixel_sizey = ARG.pixel_sizey
 pixel_sizex *= ARG.bin_x
 pixel_sizey *= ARG.bin_y
+print("default_pixel_size=%f pixel_sizex=%f pixel_sizey=%f"%(default_pixel_size, pixel_sizex, pixel_sizey))
 
 detector_sizex = default_detector_sizex
 detector_sizey = default_detector_sizey
@@ -205,10 +212,16 @@ elif detector_sizex > expected_binned_sizex:
 	print(colored("Warning: detector_sizex=%d > expected_binned_sizex=%d, can be due to error!"%(detector_sizex, expected_binned_sizex), "red"))
 	raise ValueError("detector_sizex=%d is larger than expected_binned_sizex=%d, can be due to error!"%(detector_sizex, expected_binned_sizex))
 
-rotation_center_offset = ARG.rotation_center_offset
+
 rotation_center_offset_interpfit_a = None
 rotation_center_offset_interpfit_b = None
-if ARG.rotation_center_file is not None:
+if ARG.rotation_center_offset is None and ARG.rotation_center_offset_pix is None and ARG.rotation_center_file is None:
+	rotation_center_offset = 0.0
+elif ARG.rotation_center_offset is not None:
+	rotation_center_offset = ARG.rotation_center_offset
+elif ARG.rotation_center_offset_pix is not None:
+	rotation_center_offset = ARG.rotation_center_offset_pix * ARG.bin_x * default_pixel_size
+elif ARG.rotation_center_file is not None:
 	rcf = open(ARG.rotation_center_file, 'r')
 	for x in rcf.readlines():
 		if re.search("^rotation_center_offset=", x):
