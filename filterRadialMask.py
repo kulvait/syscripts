@@ -12,7 +12,10 @@ parser = argparse.ArgumentParser(description="Apply radial mask and optional sym
 parser.add_argument("inputDen", help="Input DEN file")
 parser.add_argument("outputDen", help="Output DEN file")
 
-parser.add_argument("--radial-mask-radius", type=float, required=True,
+parser.add_argument("--radial-mask-radius", type=float, default=None,
+                    help="Radius of radial mask in pixels")
+
+parser.add_argument("--mask-gaussian-radius", type=float, default=None,
                     help="Radius of radial mask in pixels")
 
 #Fine tune specification of radial center
@@ -24,7 +27,7 @@ gy = parser.add_mutually_exclusive_group()
 gy.add_argument("--radial-center-offset-y", type=float, default=None, help="Optional Y offset of radial center from image center (default: 0)")
 gy.add_argument("--radial-center-y", type=float, default=None, help="Optional Y coordinate of radial center (default: image center)")
 
-
+parser.add_argument("--non-negative", action="store_true", help="Set negative values to zero after masking")
 
 parser.add_argument("--out-dimx", type=int, default=None,
                     help="Optional output dimension X (crop symmetrically)")
@@ -51,6 +54,20 @@ def create_radial_mask(h, w, radius, center_x=None, center_y=None):
     y, x = np.ogrid[:h, :w]
     dist = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
     return dist <= radius
+
+def create_gaussian_radial_mask(h, w, radius, center_x=None, center_y=None):
+    if center_x is None:
+        center_x = w / 2
+    if center_y is None:
+        center_y = h / 2
+
+    y, x = np.ogrid[:h, :w]
+    r = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+
+    sigma = (radius / 2) / np.sqrt(2 * np.log(2))
+    mask = np.exp(-(r**2) / (2 * sigma**2))
+
+    return mask
 
 
 def crop_center(arr, out_x, out_y, center_x=None, center_y=None):
@@ -125,7 +142,12 @@ elif ARG.radial_center_offset_y is not None:
     center_y = ydim / 2 + ARG.radial_center_offset_y
 else:
     center_y = ydim / 2
-radial_mask = create_radial_mask(ydim, xdim, ARG.radial_mask_radius, center_x=center_x, center_y=center_y)
+
+radial_mask = np.ones((ydim, xdim), dtype=np.float32)  # No mask (all ones)
+if ARG.mask_gaussian_radius is not None:
+    radial_mask = create_gaussian_radial_mask(ydim, xdim, ARG.mask_gaussian_radius, center_x=center_x, center_y=center_y)
+if ARG.radial_mask_radius is not None:
+    radial_mask = create_radial_mask(ydim, xdim, ARG.radial_mask_radius, center_x=center_x, center_y=center_y)
 
 # ---------------------------------------------------------
 # Prepare output file
@@ -148,5 +170,9 @@ for k in range(out_dimz):
     masked = frame * radial_mask
     # Then crop
     output_frame = filterFrame(masked, out_dimx, out_dimy, center_x=center_x, center_y=center_y)
+    # Set negative values to zero if requested
+    if ARG.non_negative:
+        output_frame = np.maximum(output_frame, 0)
+    output_frame = output_frame.astype(frame.dtype)  # Ensure same dtype as input
     # Save
     DEN.writeFrame(ARG.outputDen, k, output_frame, force=True)
