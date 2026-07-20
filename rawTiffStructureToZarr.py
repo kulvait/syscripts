@@ -6,16 +6,17 @@ Created Feb 2026
 @author: Vojtěch Kulvait
 """
 import h5py
+import numpy as np
 import pandas as pd
 #from libtiff import TIFF
 #pd.set_option('display.max_columns', 100) to display untruncated columns
 from PIL import Image
 from PIL.TiffTags import TAGS
-import numpy as np
 import sys
 import os
 import argparse
 from denpy import DEN
+from denpy import ZAR
 from denpy import PETRA
 import io
 from contextlib import redirect_stdout
@@ -46,14 +47,26 @@ parser.add_argument(
 parser.add_argument("--fix-corrupted-h5", action="store_true", help="Fix corrupted HDF5 file by scanning for TIFF files.")
 parser.add_argument("--force", action="store_true")
 parser.add_argument('--compression', type=str,
-					choices=['none', 'zstd', 'lz4', 'gzip', 'blosc', 'blosc-blosclz', 'blosc-lz4', 'blosc-lz4hc', 'blosc-snappy', 'blosc-zlib', 'blosc-zstd'],
+					choices=['none', 'zstd', 'lz4', 'gzip', 'blosc', 'blosc-blosclz', 'blosc-lz4', 'blosc-lz4hc', 'blosc-snappy', 'blosc-zlib', 'blosc-zstd', 'avif', 'jpeg2k'],
 					default='blosc-zstd',
 					help="Compression type (default: blosc-zstd).")
 parser.add_argument('--clevel', type=int, default=5,
 					help="Compression level (default: 5).")
 parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
 parser.add_argument("--zip", action="store_true", help="Use zip store for Zarr output instead of directory store.")
+parser.add_argument("--v2", action="store_true", help="Use Zarr v2 format instead of v3 (default: False, use v3).")
 parser.add_argument("--verbose", action="store_true")
+
+import sys
+import time
+from datetime import timedelta
+
+start_time = time.time()
+script_name = sys.argv[0]
+script_params = " ".join(sys.argv[1:])
+
+print(f"START {script_name} {script_params}")
+
 
 try:
 	_out = io.StringIO()
@@ -97,127 +110,6 @@ def insertToDf(df, dat, name):
 		t = time[i]
 		v = value[i]
 		df.loc[t][name] = v
-
-def get_compressor(name, clevel=5, zarrv3=False, outtype=None, endian="little"):
-	"""
-	Return a zarr-compatible compressor/codec based on name and Zarr format version.
-	
-	Parameters
-	----------
-	name : str
-		Compression name (e.g., 'none', 'zstd', 'blosc-zstd', 'lz4', 'gzip', ...).
-	clevel : int
-		Compression level (meaning depends on the codec; Zstd/Blosc: 0..9 typical).
-	zarrv3 : bool
-		If True, return a Zarr v3 codec *pipeline* (list) suitable for `codecs=...`.
-		If False, return a single compressor object (e.g., for Zarr v2 `compressor=`).
-	outtype : Optional[Union[np.dtype, type, str]]
-		Array dtype (e.g., np.uint16, 'uint16', np.dtype('uint16')). Used to set
-		Blosc `typesize` (bytes per element). If None, defaults to itemsize=1.
-	endian : str
-		'little' or 'big' – used for v3 BytesCodec. Defaults to 'little'.
-	"""
-	# Derive element size in bytes; default to 1 if unknown
-	if outtype is not None:
-		try:
-			itemsize = np.dtype(outtype).itemsize
-		except Exception:
-			itemsize = 1
-	else:
-		itemsize = 1
-
-	if not zarrv3:
-		from numcodecs import Blosc, GZip as NcGZip
-		# Old style compressors (zarr v2 compatible)
-		if name == 'none':
-			return None
-		elif name == 'zstd' or name == 'blosc-zstd':
-			return Blosc(cname='zstd', clevel=clevel, shuffle=Blosc.BITSHUFFLE, typesize=itemsize)
-		elif name == 'lz4' or name == 'blosc-lz4':
-			return Blosc(cname='lz4', clevel=clevel, shuffle=Blosc.BITSHUFFLE, typesize=itemsize)
-		elif name == 'gzip' or name == 'blosc-zlib':
-			return GZip(level=clevel)
-		elif name == 'blosc' or name == 'blosc-blosclz':
-			return Blosc(cname='blosclz', clevel=clevel, shuffle=Blosc.BITSHUFFLE, typesize=itemsize)
-		else:
-			raise ValueError(f"Unknown compression type: {name}")
-	else:
-		# ---- Zarr v3 codecs (lazy import for safety) ----
-		try:
-			import zarr.codecs as codecs
-		except ImportError:
-			raise ImportError(
-				"Zarr v3 codec system not available in this version of zarr. "
-				"Please upgrade to zarr>=2.18.0."
-			)
-		# Map names to codecs
-		codecs_chain = []
-		if name == 'none':
-			print("No compression selected for Zarr v3, returning empty codec chain.")
-		elif name == "zstd":
-			codecs_chain.append(codecs.ZstdCodec(level=clevel))
-		elif name == "lz4":
-			codecs_chain.append(codecs.LZ4Codec(level=clevel))
-		elif name == "gzip":
-			codecs_chain.append(codecs.GzipCodec(level=clevel))
-		elif name == "blosc" or name == "blosc-blosclz":
-			codecs_chain.append(
-				codecs.BloscCodec(
-					cname=codecs.BloscCname.blosclz,
-					clevel=clevel,
-					shuffle="shuffle",
-					typesize=itemsize,
-				)
-			)
-		elif name == "blosc-lz4":
-				codecs_chain.append(
-						codecs.BloscCodec(
-						cname=codecs.BloscCname.lz4,
-						clevel=clevel,
-						shuffle="shuffle",
-						typesize=itemsize,
-						)
-				)
-		elif name == "blosc-lz4hc":
-			codecs_chain.append(
-					codecs.BloscCodec(
-					cname=codecs.BloscCname.lz4hc,
-					clevel=clevel,
-					shuffle="shuffle",
-					typesize=itemsize,
-					)
-			)
-		elif name == "blosc-snappy":
-			codecs_chain.append(
-					codecs.BloscCodec(
-					cname=codecs.BloscCname.snappy,
-					clevel=clevel,
-					shuffle="shuffle",
-					typesize=itemsize,
-					)
-			)
-		elif name == "blosc-zlib":
-			codecs_chain.append(
-					codecs.BloscCodec(
-					cname=codecs.BloscCname.zlib,
-					clevel=clevel,
-					shuffle="shuffle",
-					typesize=itemsize,
-					)
-			)
-		elif name == "blosc-zstd":
-			codecs_chain.append(
-					codecs.BloscCodec(
-					cname=codecs.BloscCname.zstd,
-					clevel=clevel,
-					shuffle="shuffle",
-					typesize=itemsize,
-					)
-			)
-		else:
-			raise ValueError(f"Unknown compressor type '{name}' for Zarr v3")
-		return codecs_chain
-
 
 def tiffImageToArrayIndex(tiffFile, outArray, kIndex):
 	"""Read a single TIFF image and write it to the specified index in the Zarr/numpy array."""
@@ -296,7 +188,7 @@ def writeZarrArray(df, zarrArray, inputDir):
 	if ARG.j == 0:
 		for i, f in enumerate(inputTifFiles):
 			start = timer()
-			tiffImageToArrayIndex(f, zarr_array, i)
+			tiffImageToArrayIndex(f, zarrArray, i)
 			if ARG.verbose and (i % 100 == 0 or i == n_images - 1):
 				print(f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
 	else:
@@ -345,7 +237,10 @@ else:
 # Check if the Zarr file already exists and handle based on force flag
 if os.path.exists(ARG.outputZarr):
 	if ARG.force:
-		shutil.rmtree(ARG.outputZarr)
+		if os.path.isfile(ARG.outputZarr):
+			os.remove(ARG.outputZarr)
+		else:
+			shutil.rmtree(ARG.outputZarr)
 	else:
 		raise IOError(f"File {ARG.outputZarr} exists, use --force to overwrite")
 
@@ -368,7 +263,6 @@ else:
 		dtype = img_array.dtype
 		print(f"Determined image dimensions: {dimx}x{dimy}, dtype: {dtype}")
 
-import numpy as np
 
 def sanitize_for_json(obj):
 	"""
@@ -390,6 +284,11 @@ def sanitize_for_json(obj):
 	# Sequences -> recurse element-wise
 	if isinstance(obj, (list, tuple)):
 		return [sanitize_for_json(x) for x in obj]
+	if isinstance(obj, (bytes, bytearray, np.bytes_)):
+		try:
+			return obj.decode("utf-8")
+		except UnicodeDecodeError:
+			return obj.decode("utf-8", errors="replace")
 	# Everything else: assume already JSON-safe (str, int, float, bool, None)
 	return obj
 
@@ -495,13 +394,26 @@ else:
 zarr_top_level = zarr.open_group(
 			store=store,
 			mode='w',
-			attributes=experimentInfo_sanitized
+			attributes=experimentInfo_sanitized,
+			zarr_format=2 if ARG.v2 else 3,
 		)
 
-codec = get_compressor(ARG.compression, ARG.clevel, zarrv3=True, outtype=dtype)
-zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
-zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
-zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+codec = ZAR.get_compressor(ARG.compression, ARG.clevel, zarrv2=ARG.v2, dtype=outtype)
+if not ARG.v2:
+	# In Zarr v3 we can set the compressor at the group level and it will be inherited by all arrays
+	if ARG.compression in ['avif', 'jpeg2k']:
+		zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
+		zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
+		zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
+	else:
+		zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+		zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+		zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+else:
+	# In Zarr v2 we have to set the compressor on each array individually
+	zarr_array_ref = zarr.open_array(store=store, path='ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
+	zarr_array_dar = zarr.open_array(store=store, path='dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
+	zarr_array_img = zarr.open_array(store=store, path='img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
 
 zarr_params = zarr_top_level.create_group(name="params", attributes=df_json)
 h5 = h5py.File(ARG.inputh5, "r")
@@ -520,3 +432,11 @@ if ARG.fix_corrupted_h5 and scan.empty:
 	scan = scanForTiffFiles(inputDir, exclude_files)
 
 writeZarrArray(scan, zarr_array_img, inputDir)
+
+elapsed_seconds = int(time.time() - start_time)
+
+hours = elapsed_seconds // 3600
+minutes = (elapsed_seconds % 3600) // 60
+seconds = elapsed_seconds % 60
+
+print(f"END {script_name} in {hours:02d}:{minutes:02d}:{seconds:02d}s")
