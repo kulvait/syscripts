@@ -31,6 +31,7 @@ import shutil
 from timeit import default_timer as timer
 import json
 import numcodecs
+import zipfile
 from numcodecs import Blosc, GZip, VLenUTF8
 from pathlib import Path
 
@@ -47,10 +48,10 @@ parser.add_argument(
 parser.add_argument("--fix-corrupted-h5", action="store_true", help="Fix corrupted HDF5 file by scanning for TIFF files.")
 parser.add_argument("--force", action="store_true")
 parser.add_argument('--compression', type=str,
-					choices=['none', 'zstd', 'lz4', 'gzip', 'blosc', 'blosc-blosclz', 'blosc-lz4', 'blosc-lz4hc', 'blosc-snappy', 'blosc-zlib', 'blosc-zstd', 'avif', 'jpeg2k'],
+					choices=['none', 'zstd', 'lz4', 'gzip', 'blosc', 'blosc-blosclz', 'blosc-lz4', 'blosc-lz4hc', 'blosc-snappy', 'blosc-zlib', 'blosc-zstd', 'avif', 'jpeg2k', 'htj2k', 'jpegxl', 'jpegxr', 'sz3', 'zfp'],
 					default='blosc-zstd',
 					help="Compression type (default: blosc-zstd).")
-parser.add_argument('--clevel', type=int, default=5,
+parser.add_argument('--clevel', type=float, default=5,
 					help="Compression level (default: 5).")
 parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
 parser.add_argument("--zip", action="store_true", help="Use zip store for Zarr output instead of directory store.")
@@ -227,43 +228,6 @@ def scanForTiffFiles(directory, exclude_files):
 	tiff_files.sort()
 	return pd.DataFrame({'image_file': tiff_files})
 
-#Parse input data
-if ARG.raw_dir is not None:
-	inputDir = ARG.raw_dir
-else:
-	inputDir = os.path.dirname(os.path.realpath(ARG.inputh5))
-
-
-# Check if the Zarr file already exists and handle based on force flag
-if os.path.exists(ARG.outputZarr):
-	if ARG.force:
-		if os.path.isfile(ARG.outputZarr):
-			os.remove(ARG.outputZarr)
-		else:
-			shutil.rmtree(ARG.outputZarr)
-	else:
-		raise IOError(f"File {ARG.outputZarr} exists, use --force to overwrite")
-
-df = PETRA.scanDataset(ARG.inputh5, includeCurrent=True)
-experimentInfo = PETRA.getExperimentInfo(ARG.inputh5)
-export = {}
-#Test if df is not empty and determine numpy type of image_file TIFF and its dimensions
-if df.empty:
-	raise ValueError("Dataframe is empty, no data to write to Zarr file %s" % (os.path.realpath(ARG.outputZarr)))
-else:
-	tiff_file_str = df["image_file"].iloc[0]#In some versions this is string but in some bytes
-	if isinstance(tiff_file_str, bytes):
-		tiff_file_str = tiff_file_str.decode("utf-8")
-	tiff_file_path = os.path.join(inputDir, tiff_file_str.lstrip("/"))
-	if not os.path.exists(tiff_file_path):
-		raise FileNotFoundError(f"TIFF file {tiff_file_path} does not exist, cannot determine image dimensions and dtype.")
-	with Image.open(tiff_file_path) as img:
-		img_array = np.array(img)
-		dimy, dimx = img_array.shape
-		dtype = img_array.dtype
-		print(f"Determined image dimensions: {dimx}x{dimy}, dtype: {dtype}")
-
-
 def sanitize_for_json(obj):
 	"""
 	Recursively convert obj so it can be JSON-serialized:
@@ -273,7 +237,7 @@ def sanitize_for_json(obj):
 	- leave Python scalars/None/str as-is
 	"""
 	# NumPy scalars -> Python scalars
-	if isinstance(obj, (np.generic,)):	# covers np.float32, np.int64, np.bool_, etc.
+	if isinstance(obj, (np.generic,)):# covers np.float32, np.int64, np.bool_, etc.
 		return obj.item()
 	# NumPy arrays -> lists (be careful with very large arrays; attrs should stay small)
 	if isinstance(obj, np.ndarray):
@@ -291,8 +255,6 @@ def sanitize_for_json(obj):
 			return obj.decode("utf-8", errors="replace")
 	# Everything else: assume already JSON-safe (str, int, float, bool, None)
 	return obj
-
-
 
 def copy_h5_arrays_into_group(
 	h5,
@@ -358,6 +320,79 @@ def copy_h5_arrays_into_group(
 		print("Finished copying HDF5 arrays into Zarr group:", zarr_params_group.path)
 
 
+#Parse input data
+if ARG.raw_dir is not None:
+	inputDir = ARG.raw_dir
+else:
+	inputDir = os.path.dirname(os.path.realpath(ARG.inputh5))
+
+# Check if the Zarr file already exists and handle based on force flag
+if os.path.exists(ARG.outputZarr):
+	if ARG.force:
+		if os.path.isfile(ARG.outputZarr):
+			os.remove(ARG.outputZarr)
+		else:
+			shutil.rmtree(ARG.outputZarr)
+	else:
+		raise IOError(f"File {ARG.outputZarr} exists, use --force to overwrite")
+
+df = PETRA.scanDataset(ARG.inputh5, includeCurrent=True)
+experimentInfo = PETRA.getExperimentInfo(ARG.inputh5)
+export = {}
+
+dtype = None
+#Test if df is not empty and determine numpy type of image_file TIFF and its dimensions
+if df.empty:
+	raise ValueError("Dataframe is empty, no data to write to Zarr file %s" % (os.path.realpath(ARG.outputZarr)))
+else:
+	tiff_file_str = df["image_file"].iloc[0]#In some versions this is string but in some bytes
+	if isinstance(tiff_file_str, bytes):
+		tiff_file_str = tiff_file_str.decode("utf-8")
+	tiff_file_path = os.path.join(inputDir, tiff_file_str.lstrip("/"))
+	if not os.path.exists(tiff_file_path):
+		raise FileNotFoundError(f"TIFF file {tiff_file_path} does not exist, cannot determine image dimensions and dtype.")
+	with Image.open(tiff_file_path) as img:
+		img_array = np.array(img)
+		dimy, dimx = img_array.shape
+		dtype = img_array.dtype
+		print(f"Determined image dimensions: {dimx}x{dimy}, dtype: {dtype}")
+
+if dtype is None:
+	raise ValueError("Could not determine dtype of TIFF images, cannot proceed.")
+
+if dtype != np.uint16:
+	raise ValueError(f"Warning: TIFF images are of type {dtype}, expected uint16. This may lead to unexpected behavior.")
+
+if ARG.compression in ["zfp", "sz3"]:
+	# For integer types smaller then int32, zfp requires at least 32 bits, so we need to upcast to int32
+	if np.issubdtype(dtype, np.integer) and dtype.itemsize < 4:
+		outtype = np.uint32
+	else:
+		outtype = dtype
+else:
+	outtype = dtype  # Keep the same dtype as the original TIFF images
+
+codec_kwargs = {}
+if ARG.compression == "jpeg2k":
+	codec_kwargs["bitspersample"] = 12 # Set bit depth to 12 for JPEG2000 which matches the original TIFF bit depth
+	codec_kwargs["colorspace"] = "GRAY" # Set color space to GRAY for grayscale images
+	codec_kwargs["mct"] = False # Disable multi-component transform for grayscale images
+	codec_kwargs["numthreads"] = 1 #Better having here 1 since we are using multiprocessing to write the images
+elif ARG.compression == "htj2k":
+	codec_kwargs["rgb"] = False # Set RGB to False for grayscale images
+elif ARG.compression == "avif":
+	codec_kwargs["bitspersample"] = 12 # Set bit depth to 12 for AVIF which matches the original TIFF bit depth
+	codec_kwargs["pixelformat"] = "YUV400 " #AVIF_PIXEL_FORMAT_YUV400
+	#codec_kwargs["matrix"] = "IDENTITY" #AVIF_MATRIX_COEFFICIENTS_IDENTITY
+	codec_kwargs["numthreads"] = 1 #Better having here 1 since we are using multiprocessing to write the images
+elif ARG.compression == "jpegxl":
+	codec_kwargs["bitspersample"] = 12
+	codec_kwargs["photometric"] = "GRAY"
+	codec_kwargs["numthreads"] = 1 #Better having here 1 since we are using multiprocessing to write the images
+elif ARG.compression == "jpegxr":
+	codec_kwargs["photometric"] = "GRAY"
+	codec_kwargs["hasalpha"] = False
+
 dark = df.loc[df["image_key"] == 2]
 white = df.loc[df["image_key"] == 1]
 scan = df.loc[df["image_key"] == 0]
@@ -365,14 +400,13 @@ scan = df.loc[df["image_key"] == 0]
 df_json = json.loads(df.to_json(orient="split", date_format="iso"))
 
 chunk_shape = (1, dimy, dimx)  # Chunking by individual images
-outtype = dtype  # Keep the same dtype as the original TIFF images
 dar_count = len(dark)
 ref_count = len(white)
 img_count = len(scan)
 
 export["dimx"] = dimx
 export["dimy"] = dimy
-export["dtype"] = str(dtype)
+export["dtype"] = str(outtype)
 export["img_count"] = img_count
 export["ref_count"] = ref_count
 export["dar_count"] = dar_count
@@ -398,22 +432,27 @@ zarr_top_level = zarr.open_group(
 			zarr_format=2 if ARG.v2 else 3,
 		)
 
-codec = ZAR.get_compressor(ARG.compression, ARG.clevel, zarrv2=ARG.v2, dtype=outtype)
-if not ARG.v2:
-	# In Zarr v3 we can set the compressor at the group level and it will be inherited by all arrays
-	if ARG.compression in ['avif', 'jpeg2k']:
-		zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
-		zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
-		zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
+codec = ZAR.get_compressor(ARG.compression, ARG.clevel, zarrv2=ARG.v2, dtype=outtype, **codec_kwargs)
+try:
+	if not ARG.v2:
+		# In Zarr v3 we can set the compressor at the group level and it will be inherited by all arrays
+		if ARG.compression in ['avif', 'jpeg2k', 'htj2k', 'jpegxl', 'jpegxr', 'sz3', 'zfp']:
+			zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
+			zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
+			zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
+		else:
+			zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+			zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+			zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
 	else:
-		zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
-		zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
-		zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
-else:
-	# In Zarr v2 we have to set the compressor on each array individually
-	zarr_array_ref = zarr.open_array(store=store, path='ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
-	zarr_array_dar = zarr.open_array(store=store, path='dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
-	zarr_array_img = zarr.open_array(store=store, path='img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
+		# In Zarr v2 we have to set the compressor on each array individually
+		zarr_array_ref = zarr.open_array(store=store, path='ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
+		zarr_array_dar = zarr.open_array(store=store, path='dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
+		zarr_array_img = zarr.open_array(store=store, path='img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')
+except zipfile.BadZipFile as e:
+	print(f"Zarr store {ARG.outputZarr} is not a valid zip file or is corrupted. This can happen when two processes try to write to the same zip file simultaneously. Please delete the file and try again.")
+	print(f"Error details: {e}")
+	sys.exit(1)
 
 zarr_params = zarr_top_level.create_group(name="params", attributes=df_json)
 h5 = h5py.File(ARG.inputh5, "r")
