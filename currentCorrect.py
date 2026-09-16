@@ -18,6 +18,7 @@ from denpy import DEN
 from denpy import PETRA
 from denpy import UTILS
 import glob
+import shutil
 import numpy as np
 from termcolor import colored
 import matplotlib
@@ -995,22 +996,25 @@ try:
 	#Save info
 	if ARG.saveinfo is not None:
 		DEN.storeNdarrayAsDEN(ARG.saveinfo, info, force=True)
-	#Close the PDF file if it was opened
-	if pdf is not None:
-		pdf.close()
 except Exception as e:
 	print(colored("Error in currentCorrect.py: %s" % (e), "red"))
 	traceback.print_exc()
 	if ARG.fix_corrupted_h5:
 		#Copy ARG.inputDen to ARG.outputDen
-		print(colored("Error in currentCorrect.py fixing by movind %s to %s, do not write log images." % (ARG.inputDen, ARG.outputDen), "red"))
-		os.system("mv %s %s" % (ARG.inputDen, ARG.outputDen))
-		sys.exit(1)
+		try:
+			shutil.copy2(ARG.inputDen, ARG.outputDen)
+			print(colored("Error in currentCorrect.py fixing by copying %s to %s, do not write log images." % (ARG.inputDen, ARG.outputDen), "yellow"))
+		except OSError as e:
+			print(colored("Error in currentCorrect.py followed by error copying %s to %s: %s" % (ARG.inputDen, ARG.outputDen, e), "red"))
+			traceback.print_exc()
+			sys.exit(1)
 	else:
 		print(colored("Error in currentCorrect.py try running with --fix-corrupted-h5", "red"))
 		sys.exit(1)
-
-	
+finally:
+	#Close the PDF file if it was opened
+	if pdf is not None:
+		pdf.close()
 
 if ARG.verbose:
 	print("End currentCorrect.py h5=%s" % (ARG.h5file))
