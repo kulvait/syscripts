@@ -19,21 +19,28 @@ from denpy import PETRA
 from denpy import UTILS
 import glob
 import shutil
-import numpy as np
-from termcolor import colored
-import matplotlib
-import matplotlib.pyplot as plt
 from timeit import default_timer as timer
 from bisect import bisect
 from bisect import bisect_left
 import multiprocessing
 from multiprocessing import Pool
 from multiprocessing import Lock
+import time
+import traceback
+
+import h5py
+import pandas as pd
+#pd.set_option('display.max_columns', 100) to display untruncated columns
+from denpy import DEN
+from denpy import PETRA
+from denpy import UTILS
+import numpy as np
+from termcolor import colored
+import matplotlib
+import matplotlib.pyplot as plt
 from scipy.ndimage import convolve1d
 from scipy.optimize import curve_fit
 from matplotlib.backends.backend_pdf import PdfPages
-import time
-import traceback
 from skimage.restoration import denoise_tv_chambolle
 
 parser = argparse.ArgumentParser()
@@ -774,6 +781,8 @@ def unwrap_make_monotone(info_angle, wrap_increase=360, threshold=None):
 
 if ARG.verbose:
 	print("Start currentCorrect.py h5=%s" % (ARG.h5file))
+
+pdf=None
 
 try:
 	#Preprocessing of the input arguments including time offset
