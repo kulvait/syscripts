@@ -12,12 +12,10 @@ import json
 import numpy as np
 from pathlib import Path
 from denpy import DEN
-from algotom.rec.reconstruction import dfi_reconstruction
 from skimage import measure
 from skimage import feature
 from skimage import filters
 from skimage.filters import meijering, sato, frangi, hessian
-from matplotlib import pyplot as plt
 import logging
 
 # Create a logger specific to this module
@@ -169,15 +167,26 @@ parser = argparse.ArgumentParser()
 parser.add_argument("ref_avg", help="Reference average of the sample region, used for normalization.")
 parser.add_argument("img_avg", help="Average intensity of the sample region in the current reconstruction, used for normalization.")
 parser.add_argument("img_sd", help="Standard deviation of the sample region in the current reconstruction, used for normalization.")
+parser.add_argument("--snr", type=str, help="Projection SNR file, used for normalization.")
+parser.add_argument("--snr-threshold", type=float, default=23, help="Threshold for SNR (snr > threshold), the higher the threshold, more conservative the estimation of the illuminated region.")
 parser.add_argument("--illum-factor", type=float, default=0.5, help="Threshold factor for illumination (ref_profile > factor * mean), the higher the factor, more conservative the estimation of the illuminated region.")
 parser.add_argument("--buckets", type=int, default=5, help="Number of vertical buckets inside illuminated region")
 parser.add_argument("--out-pdf", default=None, help="Path to save plot as PDF")
 parser.add_argument("--out-json", default=None, help="Path to save COR results as JSON")
 ARG = parser.parse_args()
 
+#Use non interactive backend for matplotlib if running in headless environment
+import matplotlib
+if not os.environ.get("DISPLAY"):
+	matplotlib.use("Agg")
+from matplotlib import pyplot as plt
+
 ref_avg = DEN.getFrame(ARG.ref_avg, 0)
 img_avg = DEN.getFrame(ARG.img_avg, 0)
 img_sd = DEN.getFrame(ARG.img_sd, 0)
+snr = None
+if ARG.snr is not None:
+	snr = DEN.getFrame(ARG.snr, 0)
 
 # Find illuminated region in the reference average profile ... vertically (y-axis)
 ref_profile = ref_avg.mean(axis=1)
@@ -205,6 +214,30 @@ print(iluminated_region_msg)
 iluminated_region_h_msg = f"Horizontal illuminated region: [{illuminated_left}, {illuminated_right}], width = {illuminated_right - illuminated_left}, factor = {ARG.illum_factor}"
 print(iluminated_region_h_msg)
 
+
+# Compute illuminated region based on SNR if provided
+if snr is not None:
+	snr_profile = snr.mean(axis=1)
+	mask_snr = snr_profile > ARG.snr_threshold
+	idx_snr = np.where(mask_snr)[0]
+	if len(idx_snr) < 2:
+		raise RuntimeError("No illuminated region found based on SNR")
+	illuminated_top_snr = idx_snr[0]
+	illuminated_bottom_snr = idx_snr[-1]
+	illuminated_region_snr = np.arange(illuminated_top_snr, illuminated_bottom_snr + 1)
+	iluminated_region_snr_msg = f"Vertical illuminated region based on SNR: [{illuminated_top_snr}, {illuminated_bottom_snr}], width = {illuminated_bottom_snr - illuminated_top_snr}, threshold = {ARG.snr_threshold}"
+	print(iluminated_region_snr_msg)
+	snr_profile_h = snr.mean(axis=0)
+	mask_snr_h = snr_profile_h > ARG.snr_threshold
+	idx_snr_h = np.where(mask_snr_h)[0]
+	if len(idx_snr_h) < 2:
+		raise RuntimeError("No illuminated region found in horizontal direction based on SNR")
+	illuminated_left_snr = idx_snr_h[0]
+	illuminated_right_snr = idx_snr_h[-1]
+	iluminated_region_snr_h_msg = f"Horizontal illuminated region based on SNR: [{illuminated_left_snr}, {illuminated_right_snr}], width = {illuminated_right_snr - illuminated_left_snr}, threshold = {ARG.snr_threshold}"
+	print(iluminated_region_snr_h_msg)
+
+
 img_profile = img_avg.mean(axis=1)
 sd_profile= img_sd.mean(axis=1)
 sd_profile_median = np.median(sd_profile)
@@ -219,6 +252,8 @@ def center_weight(n):
 	return 0.75 + 0.25 * np.cos(0.5*np.pi * x)  # Add a cosine component for smoother tapering
 
 bucket_edges = np.linspace(illuminated_top, illuminated_bottom, ARG.buckets + 1, dtype=int)
+if snr is not None:
+	bucket_edges = np.linspace(illuminated_top_snr, illuminated_bottom_snr, ARG.buckets + 1, dtype=int)
 bucket_maxima = []
 regions = []
 for i in range(ARG.buckets):
@@ -263,6 +298,18 @@ results = {
     "subregions": regions
 }
 
+if snr is not None:
+    results["illuminated_region_snr"] = {
+	"x_min": int(illuminated_left_snr),
+	"x_max": int(illuminated_right_snr),
+	"y_min": int(illuminated_top_snr),
+	"y_max": int(illuminated_bottom_snr),
+	"illuminated_height": int(illuminated_bottom_snr - illuminated_top_snr),
+	"illuminated_width": int(illuminated_right - illuminated_left),
+	"mean_snr": float(np.mean(snr_profile[illuminated_top_snr:illuminated_bottom_snr + 1])),
+	"snr_threshold": float(ARG.snr_threshold)
+    }
+
 fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
 
 profiles = [
@@ -279,6 +326,9 @@ for i, (ax, (name, profile)) in enumerate(zip(axes, profiles)):
 	# illumination boundaries (NO legend clutter)
 	ax.axvline(illuminated_top, color="blue", linewidth=2, alpha=0.8)
 	ax.axvline(illuminated_bottom, color="blue", linewidth=2, alpha=0.8)
+	if snr is not None:
+		ax.axvline(illuminated_top_snr, color="cyan", linewidth=2, alpha=0.8)
+		ax.axvline(illuminated_bottom_snr, color="cyan", linewidth=2, alpha=0.8)
 	ax.set_ylabel(name)
 	ax.grid(True, alpha=0.3)
 	ax.legend()
