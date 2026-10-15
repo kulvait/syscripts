@@ -1,22 +1,32 @@
 #!/usr/bin/env python
 """
-Created 05/2026
+Estimate illuminated bounds and select representative sample rows.
 
+Created 05/2026
 @author: Vojtěch Kulvait
+
+Region x_max/y_max coordinates are inclusive.
+Subregion start/end coordinates use half-open intervals [start, end).
+
+The reconstruction-quality score is:
+    sqrt(mean image intensity) / clipped mean standard deviation
+    * relative reference intensity
+
+Legacy JSON names "tra_avg" and "sd_div_img" are retained for compatibility.
 """
 
 import argparse
+import datetime
+import json
+import logging
+import math
 import os
 import sys
-import json
-import numpy as np
+import time
 from pathlib import Path
+
+import numpy as np
 from denpy import DEN
-from skimage import measure
-from skimage import feature
-from skimage import filters
-from skimage.filters import meijering, sato, frangi, hessian
-import logging
 
 # Create a logger specific to this module
 log = logging.getLogger(__name__)
@@ -32,341 +42,459 @@ log.addHandler(ch)
 log.propagate = False # Prevent log messages from being propagated to the root logger
 
 
-class JsonCache:
-	def __init__(self, path=None):
-		self.entries = {}
-		if path is not None:
-			self.path = path
-		if os.path.exists(path):
-			self.load(path)
-
-	def _make_key(
-		self,
-		sinogram_ind,
-		cor,
-		reconstruction="dfi",
-		apply_log=False,
-	):
-		return (
-			int(sinogram_ind),
-			round(float(cor), 6),
-			str(reconstruction),
-			bool(apply_log),
-		)
-
-	def load(self, path):
-		path = Path(path)
-		with open(path, "r") as f:
-			raw = json.load(f)
-		self.entries = {}
-		for entry in raw:
-			key = self._make_key(
-				sinogram_ind=entry["sinogram_ind"],
-				cor=entry["cor"],
-				reconstruction=entry["reconstruction"],
-				apply_log=entry["apply_log"],
-			)
-			self.entries[key] = entry
-
-	def save(self, path = None):
-		if path is None:
-			path = self.path
-		if path is None:
-			log.warning("No path specified for saving cache.")
-			return
-		path = Path(path)
-		with open(path, "w") as f:
-			json.dump(
-				list(self.entries.values()),
-				f,
-				indent=2,
-			)
-
-	def get_entry(
-		self,
-		sinogram_ind,
-		cor,
-		reconstruction="dfi",
-		apply_log=False,
-		create=False,
-	):
-		key = self._make_key(
-			sinogram_ind,
-			cor,
-			reconstruction,
-			apply_log,
-		)
-		entry = self.entries.get(key)
-		if entry is None and create:
-			entry = {
-				"sinogram_ind": int(sinogram_ind),
-				"cor": float(cor),
-				"reconstruction": reconstruction,
-				"apply_log": apply_log,
-				"scores": {},
-			}
-			self.entries[key] = entry
-		return entry
-
-	def get_json(self):
-		return list(self.entries.values())
-
-	def get_score(
-		self,
-		method,
-		sinogram_ind,
-		cor,
-		reconstruction="dfi",
-		apply_log=False,
-	):
-		entry = self.get_entry(
-			sinogram_ind,
-			cor,
-			reconstruction,
-			apply_log,
-		)
-		if entry is None:
-			return None
-		return entry["scores"].get(method)
-
-	def set_score(
-		self,
-		method,
-		value,
-		sinogram_ind,
-		cor,
-		reconstruction="dfi",
-		apply_log=False,
-	):
-		entry = self.get_entry(
-			sinogram_ind,
-			cor,
-			reconstruction,
-			apply_log,
-			create=True,
-		)
-		entry["scores"][method] = value
-
-	def get_scores(
-		self,
-		sinogram_ind,
-		cor,
-		reconstruction="dfi",
-		apply_log=False,
-	):
-		entry = self.get_entry(
-			sinogram_ind,
-			cor,
-			reconstruction,
-			apply_log,
-			create=True,
-		)
-		return entry["scores"]
-
-parser = argparse.ArgumentParser()
-parser.add_argument("ref_avg", help="Reference average of the sample region, used for normalization.")
-parser.add_argument("img_avg", help="Average intensity of the sample region in the current reconstruction, used for normalization.")
-parser.add_argument("img_sd", help="Standard deviation of the sample region in the current reconstruction, used for normalization.")
-parser.add_argument("--snr", type=str, help="Projection SNR file, used for normalization.")
-parser.add_argument("--snr-threshold", type=float, default=23, help="Threshold for SNR (snr > threshold), the higher the threshold, more conservative the estimation of the illuminated region.")
-parser.add_argument("--illum-factor", type=float, default=0.5, help="Threshold factor for illumination (ref_profile > factor * mean), the higher the factor, more conservative the estimation of the illuminated region.")
-parser.add_argument("--buckets", type=int, default=5, help="Number of vertical buckets inside illuminated region")
-parser.add_argument("--out-pdf", default=None, help="Path to save plot as PDF")
-parser.add_argument("--out-json", default=None, help="Path to save COR results as JSON")
-ARG = parser.parse_args()
-
-#Use non interactive backend for matplotlib if running in headless environment
-import matplotlib
-if not os.environ.get("DISPLAY"):
-	matplotlib.use("Agg")
-from matplotlib import pyplot as plt
-
-ref_avg = DEN.getFrame(ARG.ref_avg, 0)
-img_avg = DEN.getFrame(ARG.img_avg, 0)
-img_sd = DEN.getFrame(ARG.img_sd, 0)
-snr = None
-if ARG.snr is not None:
-	snr = DEN.getFrame(ARG.snr, 0)
-
-# Find illuminated region in the reference average profile ... vertically (y-axis)
-ref_profile = ref_avg.mean(axis=1)
-ref_mean = np.mean(ref_profile)
-ref_rel = ref_profile / ref_mean
-mask_ref = ref_profile > ref_mean*ARG.illum_factor
-idx = np.where(mask_ref)[0]
-if len(idx) < 2:
-	raise RuntimeError("No illuminated region found")
-illuminated_top = idx[0]
-illuminated_bottom = idx[-1]
-#Do the same in horizontal direction (x-axis) if needed, but for now we focus on vertical region
-ref_profile_h = ref_avg.mean(axis=0)
-ref_mean_h = np.mean(ref_profile_h)
-mask_ref_h = ref_profile_h > ref_mean_h*ARG.illum_factor
-idx_h = np.where(mask_ref_h)[0]
-if len(idx_h) < 2:
-	raise RuntimeError("No illuminated region found in horizontal direction")
-illuminated_left = idx_h[0]
-illuminated_right = idx_h[-1]
-
-illuminated_region = np.arange(illuminated_top, illuminated_bottom + 1)
-iluminated_region_msg = f"Vertical illuminated region: [{illuminated_top}, {illuminated_bottom}], width = {illuminated_bottom - illuminated_top}, factor = {ARG.illum_factor}"
-print(iluminated_region_msg)
-iluminated_region_h_msg = f"Horizontal illuminated region: [{illuminated_left}, {illuminated_right}], width = {illuminated_right - illuminated_left}, factor = {ARG.illum_factor}"
-print(iluminated_region_h_msg)
+PROGRAM_NAME = "estimateSampleRegion"
 
 
-# Compute illuminated region based on SNR if provided
-if snr is not None:
-	snr_profile = snr.mean(axis=1)
-	mask_snr = snr_profile > ARG.snr_threshold
-	idx_snr = np.where(mask_snr)[0]
-	if len(idx_snr) < 2:
-		raise RuntimeError("No illuminated region found based on SNR")
-	illuminated_top_snr = idx_snr[0]
-	illuminated_bottom_snr = idx_snr[-1]
-	illuminated_region_snr = np.arange(illuminated_top_snr, illuminated_bottom_snr + 1)
-	iluminated_region_snr_msg = f"Vertical illuminated region based on SNR: [{illuminated_top_snr}, {illuminated_bottom_snr}], width = {illuminated_bottom_snr - illuminated_top_snr}, threshold = {ARG.snr_threshold}"
-	print(iluminated_region_snr_msg)
-	snr_profile_h = snr.mean(axis=0)
-	mask_snr_h = snr_profile_h > ARG.snr_threshold
-	idx_snr_h = np.where(mask_snr_h)[0]
-	if len(idx_snr_h) < 2:
-		raise RuntimeError("No illuminated region found in horizontal direction based on SNR")
-	illuminated_left_snr = idx_snr_h[0]
-	illuminated_right_snr = idx_snr_h[-1]
-	iluminated_region_snr_h_msg = f"Horizontal illuminated region based on SNR: [{illuminated_left_snr}, {illuminated_right_snr}], width = {illuminated_right_snr - illuminated_left_snr}, threshold = {ARG.snr_threshold}"
-	print(iluminated_region_snr_h_msg)
+def configure_logging():
+    """Configure console logging without adding duplicate handlers."""
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
+    if not log.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s - %(name)s:%(lineno)d - %(levelname)s : %(message)s",
+                datefmt="%d.%m.%Y %H:%M:%S",
+            )
+        )
+        log.addHandler(handler)
 
 
-img_profile = img_avg.mean(axis=1)
-sd_profile= img_sd.mean(axis=1)
-sd_profile_median = np.median(sd_profile)
-sd_profile = np.clip(sd_profile, sd_profile_median*0.5, sd_profile_median*100)  # Clip to avoid extreme values
-sd_div_img = np.divide(sd_profile, np.sqrt(img_profile), out=np.zeros_like(sd_profile), where=img_profile!=0)
-sd_div_img = np.divide(np.sqrt(img_profile), sd_profile, out=np.zeros_like(sd_profile), where=img_profile!=0) * ref_rel  # Normalize by reference profile
-
-# Define vertical buckets within the illuminated region
-def center_weight(n):
-	# Create a weight array that peaks at the center and tapers towards the edges
-	x = np.linspace(-1, 1, n)
-	return 0.75 + 0.25 * np.cos(0.5*np.pi * x)  # Add a cosine component for smoother tapering
-
-bucket_edges = np.linspace(illuminated_top, illuminated_bottom, ARG.buckets + 1, dtype=int)
-if snr is not None:
-	bucket_edges = np.linspace(illuminated_top_snr, illuminated_bottom_snr, ARG.buckets + 1, dtype=int)
-bucket_maxima = []
-regions = []
-for i in range(ARG.buckets):
-	bucket_start = bucket_edges[i]
-	bucket_end = bucket_edges[i + 1]
-	bucket_profile = sd_div_img[bucket_start:bucket_end].copy()  # Copy to avoid modifying the original array
-	if len(bucket_profile) == 0:
-		bucket_maxima.append(None)
-		continue
-	bucket_profile *= center_weight(len(bucket_profile))  # Apply center weighting
-	max_idx = np.argmax(bucket_profile)
-	global_max_idx = bucket_start + max_idx
-	bucket_maxima.append(global_max_idx)
-	regions.append({
-		"id": i,
-		"start": int(bucket_start),
-		"end": int(bucket_end),
-		"max_row": int(global_max_idx),
-		"values": {
-			"ref_avg": float(ref_profile[global_max_idx]),
-			"tra_avg": float(img_profile[global_max_idx]),
-			"img_sd": float(sd_profile[global_max_idx]),
-			"sd_div_img": float(sd_div_img[global_max_idx]),
-		},
-	})
-	print(f"Bucket {i+1}: [{bucket_start}, {bucket_end}), max at row {global_max_idx} with value {bucket_profile[max_idx]:.3g}")
+def format_elapsed(seconds):
+    """Format elapsed time as HH:MM:SS.sss."""
+    milliseconds = round(seconds * 1000)
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
 
 
-results = {
-    "illuminated_region": {
-        "x_min": int(illuminated_left),
-        "x_max": int(illuminated_right),
-        "y_min": int(illuminated_top),
-        "y_max": int(illuminated_bottom),
-        "illuminated_width": int(illuminated_right - illuminated_left),
-        "illuminated_height": int(illuminated_bottom - illuminated_top),
-        "mean_ref_intensity": float(ref_mean),
-        "threshold_factor": float(ARG.illum_factor),
-        "ref_intensity_threshold": float(ref_mean * ARG.illum_factor)
-    },
-    "subregion_count": ARG.buckets,
-    "subregions": regions
-}
+def build_parser():
+    """Build the command-line parser."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Estimate illuminated bounds and select representative rows "
+            "within vertical buckets."
+        )
+    )
+    parser.add_argument(
+        "ref_avg",
+        type=Path,
+        help="Reference-average DEN file used to estimate illumination.",
+    )
+    parser.add_argument(
+        "img_avg",
+        type=Path,
+        help="Image-average DEN file used to compute row quality scores.",
+    )
+    parser.add_argument(
+        "img_sd",
+        type=Path,
+        help="Image-standard-deviation DEN file used to compute row scores.",
+    )
+    parser.add_argument(
+        "--snr",
+        type=Path,
+        help="Optional projection-SNR DEN file used to set bucket bounds.",
+    )
+    parser.add_argument(
+        "--snr-threshold",
+        type=float,
+        default=23.0,
+        help="Select SNR-profile values strictly above this threshold (default: 23).",
+    )
+    parser.add_argument(
+        "--illum-factor",
+        type=float,
+        default=0.5,
+        help=(
+            "Select reference-profile values strictly above factor * mean "
+            "(default: 0.5)."
+        ),
+    )
+    parser.add_argument(
+        "--buckets",
+        type=int,
+        default=5,
+        help="Number of nonempty vertical buckets (default: 5).",
+    )
+    parser.add_argument(
+        "--out-pdf",
+        type=Path,
+        help="Save the plot as PDF instead of displaying it.",
+    )
+    parser.add_argument(
+        "--out-json",
+        type=Path,
+        help="Save illuminated bounds and selected subregions as JSON.",
+    )
+    return parser
 
-if snr is not None:
-    results["illuminated_region_snr"] = {
-	"x_min": int(illuminated_left_snr),
-	"x_max": int(illuminated_right_snr),
-	"y_min": int(illuminated_top_snr),
-	"y_max": int(illuminated_bottom_snr),
-	"illuminated_height": int(illuminated_bottom_snr - illuminated_top_snr),
-	"illuminated_width": int(illuminated_right - illuminated_left),
-	"mean_snr": float(np.mean(snr_profile[illuminated_top_snr:illuminated_bottom_snr + 1])),
-	"snr_threshold": float(ARG.snr_threshold)
+
+def validate_arguments(parser, args):
+    """Validate arguments that do not require loading image data."""
+    if args.buckets < 1:
+        parser.error("--buckets must be at least 1.")
+
+    if not math.isfinite(args.illum_factor) or args.illum_factor < 0:
+        parser.error("--illum-factor must be finite and nonnegative.")
+
+    if not math.isfinite(args.snr_threshold):
+        parser.error("--snr-threshold must be finite.")
+
+    for name in ("ref_avg", "img_avg", "img_sd", "snr"):
+        path = getattr(args, name)
+        if path is not None and not path.is_file():
+            parser.error(f"{name}: input file does not exist: {path}")
+
+
+def load_frame(path, name, expected_shape=None, nonnegative=False):
+    """Load and validate the first DEN frame as a floating-point array."""
+    frame = np.asarray(DEN.getFrame(str(path), 0), dtype=np.float64)
+
+    if frame.ndim != 2 or frame.size == 0:
+        raise ValueError(f"{name} must contain a nonempty two-dimensional frame.")
+    if expected_shape is not None and frame.shape != expected_shape:
+        raise ValueError(
+            f"{name} has shape {frame.shape}; expected {expected_shape}."
+        )
+    if not np.all(np.isfinite(frame)):
+        raise ValueError(f"{name} contains NaN or infinite values.")
+    if nonnegative and np.any(frame < 0):
+        raise ValueError(f"{name} contains negative values.")
+
+    return frame
+
+
+def profile_bounds(profile, threshold, description):
+    """Return inclusive first/last indices exceeding the threshold.
+
+    This preserves the original bounding-envelope behavior: internal gaps
+    below the threshold are not excluded from the resulting interval.
+    """
+    indices = np.flatnonzero(profile > threshold)
+    if indices.size < 2:
+        raise ValueError(
+            f"{description}: fewer than two positions exceed "
+            f"the threshold {threshold:.6g}."
+        )
+    return int(indices[0]), int(indices[-1])
+
+
+def region_geometry(left, right, top, bottom):
+    """Build region geometry using inclusive image coordinates."""
+    return {
+        "x_min": left,
+        "x_max": right,
+        "y_min": top,
+        "y_max": bottom,
+        "illuminated_width": right - left + 1,
+        "illuminated_height": bottom - top + 1,
     }
 
-fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
 
-profiles = [
-	("ref_avg", ref_profile),
-	("tra_avg", img_profile),
-#	 ("img_sd", sd_profile),
-	("RQP", sd_div_img), #Reconstruction Quality Predicator
-]
-
-for i, (ax, (name, profile)) in enumerate(zip(axes, profiles)):
-	mean_val = np.mean(profile)
-	median_val = np.median(profile)
-	ax.plot(profile, label="row profile")
-	# illumination boundaries (NO legend clutter)
-	ax.axvline(illuminated_top, color="blue", linewidth=2, alpha=0.8)
-	ax.axvline(illuminated_bottom, color="blue", linewidth=2, alpha=0.8)
-	if snr is not None:
-		ax.axvline(illuminated_top_snr, color="cyan", linewidth=2, alpha=0.8)
-		ax.axvline(illuminated_bottom_snr, color="cyan", linewidth=2, alpha=0.8)
-	ax.set_ylabel(name)
-	ax.grid(True, alpha=0.3)
-	ax.legend()
-	# title ONLY on first plot
-	if i == 0:
-		thr_val = ref_mean * ARG.illum_factor
-		ax.axhline(thr_val, color="magenta", linestyle="--", label=f"threshold = {int(thr_val)}")
-		ax.axhline(mean_val, color="red", linestyle="--", label=f"mean = {int(mean_val)}")
-		ax.axhline(median_val, color="green", linestyle=":", label=f"median = {int(median_val)}")
-		ax.set_title(iluminated_region_msg)
-	else:
-		ax.axhline(mean_val, color="red", linestyle="--", label=f"mean = {mean_val:.3g}")
-		ax.axhline(median_val, color="green", linestyle=":", label=f"median = {median_val:.3g}")
-	ax.legend()
+def report_region(region, description, criterion):
+    """Print inclusive bounds and pixel counts; return the vertical message."""
+    vertical = (
+        f"Vertical illuminated region{description}: "
+        f"[{region['y_min']}, {region['y_max']}], "
+        f"height = {region['illuminated_height']}, {criterion}"
+    )
+    print(vertical, flush=True)
+    print(
+        f"Horizontal illuminated region{description}: "
+        f"[{region['x_min']}, {region['x_max']}], "
+        f"width = {region['illuminated_width']}, {criterion}",
+        flush=True,
+    )
+    return vertical
 
 
-# -----------------------------
-# LAST plot: add bucket info
-# -----------------------------
-last_ax = axes[-1]
-last_ax.set_xlabel("Row index (y)")
-# bucket boundaries
-for b in bucket_edges:
-	last_ax.axvline(b, color="orange", linestyle="--", alpha=0.4)
-# bucket maxima
-for i, max_idx in enumerate(bucket_maxima):
-	if max_idx is not None:
-		last_ax.plot(max_idx, sd_div_img[max_idx], 'ro', label=f'Bucket {i+1} max')
+def center_weight(n):
+    """Return weights favoring the center of a nonempty bucket."""
+    if n == 1:
+        return np.ones(1, dtype=np.float64)
+    x = np.linspace(-1.0, 1.0, n)
+    return 0.75 + 0.25 * np.cos(0.5 * np.pi * x)
 
-plt.tight_layout()
 
-if ARG.out_pdf is not None:
-	fig.savefig(ARG.out_pdf)
-	log.info(f"Plot saved to {ARG.out_pdf}")
-else:
-	plt.show()
+def select_subregions(ref_profile, img_profile, sd_profile, score, top, bottom, count):
+    """Partition every selected row into nonempty half-open buckets."""
+    row_count = bottom - top + 1
+    if count > row_count:
+        raise ValueError(
+            f"--buckets ({count}) exceeds the selected row count ({row_count})."
+        )
 
-if ARG.out_json is not None:
-	with open(ARG.out_json, "w") as f:
-		json.dump(results, f, indent=2)
-	log.info(f"Results saved to {ARG.out_json}")
+    # bottom is inclusive; the final bucket must end at bottom + 1.
+    edges = top + np.arange(count + 1, dtype=np.int64) * row_count // count
+    regions = []
+
+    for i, (start, end) in enumerate(zip(edges[:-1], edges[1:])):
+        start, end = int(start), int(end)
+        weighted_score = score[start:end] * center_weight(end - start)
+        max_row = start + int(np.argmax(weighted_score))
+
+        regions.append(
+            {
+                "id": i,
+                "start": start,
+                "end": end,
+                "max_row": max_row,
+                "values": {
+                    "ref_avg": float(ref_profile[max_row]),
+                    "tra_avg": float(img_profile[max_row]),
+                    # Preserve the original clipped-SD output semantics.
+                    "img_sd": float(sd_profile[max_row]),
+                    "sd_div_img": float(score[max_row]),
+                },
+            }
+        )
+        print(
+            f"Bucket {i + 1}: [{start}, {end}), max at row {max_row} "
+            f"with weighted score {weighted_score[max_row - start]:.3g}",
+            flush=True,
+        )
+
+    return edges, regions
+
+
+def plot_profiles(args, results, profiles, bucket_edges, title):
+    """Display or save profiles, illumination boundaries, and selected rows."""
+    # Keep backend selection and pyplot import out of module initialization.
+    import matplotlib
+
+    if args.out_pdf is not None or not os.environ.get("DISPLAY"):
+        matplotlib.use("Agg")
+
+    from matplotlib import pyplot as plt
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+    reference_region = results["illuminated_region"]
+    snr_region = results.get("illuminated_region_snr")
+
+    try:
+        for i, (ax, (name, profile)) in enumerate(zip(axes, profiles)):
+            ax.plot(profile, label="row profile")
+            for key in ("y_min", "y_max"):
+                ax.axvline(
+                    reference_region[key],
+                    color="blue",
+                    linewidth=2,
+                    alpha=0.8,
+                )
+                if snr_region is not None:
+                    ax.axvline(
+                        snr_region[key],
+                        color="cyan",
+                        linewidth=2,
+                        alpha=0.8,
+                    )
+
+            ax.set_ylabel(name)
+            ax.grid(True, alpha=0.3)
+            ax.axhline(
+                float(np.mean(profile)),
+                color="red",
+                linestyle="--",
+                label=f"mean = {np.mean(profile):.3g}",
+            )
+            ax.axhline(
+                float(np.median(profile)),
+                color="green",
+                linestyle=":",
+                label=f"median = {np.median(profile):.3g}",
+            )
+            if i == 0:
+                threshold = reference_region["ref_intensity_threshold"]
+                ax.axhline(
+                    threshold,
+                    color="magenta",
+                    linestyle="--",
+                    label=f"threshold = {threshold:.3g}",
+                )
+                ax.set_title(title)
+
+        last_ax = axes[-1]
+        last_ax.set_xlabel("Row index (y)")
+        for edge in bucket_edges:
+            last_ax.axvline(edge, color="orange", linestyle="--", alpha=0.4)
+
+        score = profiles[-1][1]
+        for region in results["subregions"]:
+            row = region["max_row"]
+            last_ax.plot(
+                row,
+                score[row],
+                "ro",
+                label=f"Bucket {region['id'] + 1} selected row",
+            )
+
+        # Build legends after all artists, including bucket markers, exist.
+        for ax in axes:
+            ax.legend()
+        fig.tight_layout()
+
+        if args.out_pdf is not None:
+            fig.savefig(str(args.out_pdf), format="pdf")
+            log.info("Plot saved to %s", args.out_pdf)
+        elif matplotlib.get_backend().lower() == "agg":
+            log.info("Noninteractive Agg backend; use --out-pdf to save the plot.")
+        else:
+            plt.show()
+    finally:
+        plt.close(fig)
+
+
+def run(args):
+    """Load data, estimate bounds, select rows, and produce outputs."""
+    ref_avg = load_frame(args.ref_avg, "ref_avg", nonnegative=True)
+    img_avg = load_frame(
+        args.img_avg, "img_avg", ref_avg.shape, nonnegative=True
+    )
+    img_sd = load_frame(
+        args.img_sd, "img_sd", ref_avg.shape, nonnegative=True
+    )
+
+    ref_profile = ref_avg.mean(axis=1)
+    ref_mean = float(np.mean(ref_profile))
+    if ref_mean <= 0:
+        raise ValueError("Reference mean intensity must be positive.")
+    ref_rel = ref_profile / ref_mean
+
+    top, bottom = profile_bounds(
+        ref_profile,
+        ref_mean * args.illum_factor,
+        "Vertical reference illumination",
+    )
+    ref_profile_h = ref_avg.mean(axis=0)
+    left, right = profile_bounds(
+        ref_profile_h,
+        float(np.mean(ref_profile_h)) * args.illum_factor,
+        "Horizontal reference illumination",
+    )
+
+    reference_region = region_geometry(left, right, top, bottom)
+    reference_region.update(
+        mean_ref_intensity=ref_mean,
+        threshold_factor=args.illum_factor,
+        ref_intensity_threshold=ref_mean * args.illum_factor,
+    )
+    title = report_region(
+        reference_region, "", f"factor = {args.illum_factor}"
+    )
+    results = {"illuminated_region": reference_region}
+
+    if args.snr is not None:
+        snr = load_frame(args.snr, "snr", ref_avg.shape)
+        snr_profile = snr.mean(axis=1)
+        top, bottom = profile_bounds(
+            snr_profile, args.snr_threshold, "Vertical SNR illumination"
+        )
+        left, right = profile_bounds(
+            snr.mean(axis=0),
+            args.snr_threshold,
+            "Horizontal SNR illumination",
+        )
+        snr_region = region_geometry(left, right, top, bottom)
+        snr_region.update(
+            mean_snr=float(np.mean(snr_profile[top:bottom + 1])),
+            snr_threshold=args.snr_threshold,
+        )
+        results["illuminated_region_snr"] = snr_region
+        report_region(
+            snr_region, " based on SNR", f"threshold = {args.snr_threshold}"
+        )
+        # Preserve original behavior: SNR bounds replace reference bounds
+        # for bucket selection; they are not intersected.
+
+    img_profile = img_avg.mean(axis=1)
+    sd_profile = img_sd.mean(axis=1)
+    sd_median = float(np.median(sd_profile))
+    if sd_median <= 0:
+        raise ValueError(
+            "Median row standard deviation must be positive; "
+            "the original median-based clipping would otherwise produce "
+            "an all-zero denominator."
+        )
+    sd_profile = np.clip(sd_profile, sd_median * 0.5, sd_median * 100.0)
+
+    score = np.divide(
+        np.sqrt(img_profile),
+        sd_profile,
+        out=np.zeros_like(sd_profile),
+        where=sd_profile > 0,
+    ) * ref_rel
+    if not np.all(np.isfinite(score)):
+        raise ValueError("Computed row quality scores contain nonfinite values.")
+
+    bucket_edges, regions = select_subregions(
+        ref_profile,
+        img_profile,
+        sd_profile,
+        score,
+        top,
+        bottom,
+        args.buckets,
+    )
+    results["subregion_count"] = len(regions)
+    results["subregions"] = regions
+
+    # Save numerical results before any interactive plot can block.
+    if args.out_json is not None:
+        with args.out_json.open("w", encoding="utf-8") as output:
+            json.dump(results, output, indent=2, allow_nan=False)
+            output.write("\n")
+        log.info("Results saved to %s", args.out_json)
+
+    plot_profiles(
+        args,
+        results,
+        [
+            ("ref_avg", ref_profile),
+            ("tra_avg", img_profile),
+            ("RQP", score),
+        ],
+        bucket_edges,
+        title,
+    )
+    return 0
+
+
+def main(argv=None):
+    """Console-script entry point; return an exit status."""
+    command_arguments = list(sys.argv[1:] if argv is None else argv)
+    started = time.perf_counter()
+
+    print(
+        "START %s %s" % (PROGRAM_NAME, " ".join(command_arguments)),
+        flush=True,
+    )
+    print(
+        "Date: %s" % datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+        flush=True,
+    )
+
+    try:
+        configure_logging()
+        parser = build_parser()
+        args = parser.parse_args(command_arguments)
+        validate_arguments(parser, args)
+        return run(args)
+    except KeyboardInterrupt:
+        log.error("%s interrupted by the user.", PROGRAM_NAME)
+        return 130
+    except Exception:
+        log.exception("Error in %s.", PROGRAM_NAME)
+        return 1
+    finally:
+        print(
+            "END %s in %s"
+            % (PROGRAM_NAME, format_elapsed(time.perf_counter() - started)),
+            flush=True,
+        )
+
+if __name__ == "__main__":
+    sys.exit(main())
