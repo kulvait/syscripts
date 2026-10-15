@@ -45,23 +45,6 @@ log.propagate = False # Prevent log messages from being propagated to the root l
 PROGRAM_NAME = "estimateSampleRegion"
 
 
-def configure_logging():
-    """Configure console logging without adding duplicate handlers."""
-    log.setLevel(logging.INFO)
-    log.propagate = False
-
-    if not log.handlers:
-        handler = logging.StreamHandler()
-        handler.setLevel(logging.INFO)
-        handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s - %(name)s:%(lineno)d - %(levelname)s : %(message)s",
-                datefmt="%d.%m.%Y %H:%M:%S",
-            )
-        )
-        log.addHandler(handler)
-
-
 def format_elapsed(seconds):
     """Format elapsed time as HH:MM:SS.sss."""
     milliseconds = round(seconds * 1000)
@@ -326,22 +309,40 @@ def plot_profiles(args, results, profiles, bucket_edges, title):
         for region in results["subregions"]:
             row = region["max_row"]
             last_ax.plot(row, score[row], "ro")
+        reference_threshold = reference_region["ref_intensity_threshold"]
+        reference_factor = reference_region["threshold_factor"]
+
+        if snr_region is not None:
+            footer_text = (
+                f"Dark blue: reference bounds "
+                f"(ref_profile > mean * {reference_factor:.3g} = {reference_threshold:.3g}). "
+                f"Light blue: SNR bounds "
+                f"(snr_profile > {snr_region['snr_threshold']:.3g}). "
+                f"Buckets use SNR bounds when available, otherwise reference bounds. "
+                f"Orange dashed: bucket boundaries. Red dots: selected rows."
+            )
+        else:
+            footer_text = (
+                f"Dark blue: reference bounds "
+                f"(ref_profile > mean * {reference_factor:.3g} = {reference_threshold:.3g}). "
+                f"Buckets use reference bounds. "
+                f"Orange dashed: bucket boundaries. Red dots: selected rows."
+            )
+
         fig.text(
             0.5,
             0.01,
-            "Dark blue lines: illuminated region from reference profile. "
-            "Light blue lines: illuminated region from SNR. "
-            "Orange dashed lines: bucket boundaries. "
-            "Red dots: selected representative rows.",
+            footer_text,
             ha="center",
             va="bottom",
             fontsize=9,
+            wrap=True,
         )
         
         # Build legends after all artists, including bucket markers, exist.
         for ax in axes:
             ax.legend()
-        fig.tight_layout(rect=[0, 0.03, 1, 1])
+        fig.tight_layout(rect=[0, 0.05, 1, 1])
 
         if args.out_pdf is not None:
             fig.savefig(str(args.out_pdf), format="pdf")
@@ -484,7 +485,6 @@ def main(argv=None):
     )
 
     try:
-        configure_logging()
         parser = build_parser()
         args = parser.parse_args(command_arguments)
         validate_arguments(parser, args)
