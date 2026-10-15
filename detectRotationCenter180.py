@@ -26,6 +26,7 @@ from scipy.signal import savgol_filter
 import scipy.stats as stats
 from pathlib import Path
 from skimage.registration import phase_cross_correlation
+from typing import Tuple
 import zarr
 import shutil
 import logging
@@ -48,17 +49,23 @@ log.propagate = False # Prevent log messages from being propagated to the root l
 parser = argparse.ArgumentParser()
 parser.add_argument("inputFile", help="DEN file with projected extinctions")
 parser.add_argument("--input-h5", default=None, help="H5 file with dataset information")
+parser.add_argument("--input-mask", default=None, help="Mask file with 0/1 values, 1 means valid pixel")
 parser.add_argument("--fix-corrupted-h5", action="store_true", help="Fix corrupted HDF5 file by scanning for TIFF files and use input linspace instead.")
 parser.add_argument("--input-tick", default=None, help="Tick file with dataset information, use input-h5 if None.")
 parser.add_argument("--input-linspace", action="store_true", help="Use np.linspace(0,180, num, endpoint=False) and zero pixel shifts instead of any specs.")
 parser.add_argument("--crop-percent", default=0.0, type=float, help="Crop procent of the sinogram from the sides.")
 parser.add_argument("--binning-factor", default=None, type=float, help="Binning not considered in pixel shifts.")
 parser.add_argument("--inverted-pixshifts", action="store_true")
+parser.add_argument("--cross-correlation", action="store_true", help="Use cross-correlation method to estimate COR and exit.")
 parser.add_argument(
 	"--sample-count",
 	default=10,
 	type=int,
 	help="Number of equaly spaced horizontal lines to select for computation")
+parser.add_argument("--regions-json",
+	default=None,
+	type=str,
+	help="Use particular regions for computation, see regions.json for example.")
 parser.add_argument(
 	"--angle-count",
 	default=720,
@@ -99,6 +106,9 @@ parser.add_argument("--svd",
 parser.add_argument("--fourier",
 					action="store_true",
 					help="Perform  find_center_vo from algotom based on https://doi.org/10.1364/OE.22.019078 .")
+parser.add_argument("--ridge",
+					action="store_true",
+					help="Perform COD search based on ridge_sato algorithm.")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--log-file",
@@ -109,6 +119,10 @@ ARG = parser.parse_args()
 
 if ARG.fourier:
 	from algotom.prep import calculation
+if ARG.ridge:
+	from lautools import COR
+	if ARG.crop_percent > 0.0:
+		log.warning("Cropping sinograms prior to reconstruction might negatively affect the performance of the ridge-based COR detection method, as it relies on the full sinogram data to accurately identify the center of rotation. Consider using --crop-percent=0.0 for optimal results with this method.")
 
 # Check if input file exists and handle errors 
 # Check if the path exists at all
@@ -179,7 +193,7 @@ if ARG.input_tick is not None:
 	df = pd.DataFrame(data)
 elif ARG.input_h5 is not None:
 	try:
-		df = PETRA.imageDataset(ARG.input_h5, includePixelShift=True, overrideMagnification=ARG.override_magnification)
+		df = PETRA.imageDataset(ARG.input_h5, includePixelShift=True, includeCurrent=False, overrideMagnification=ARG.override_magnification)
 	except Exception as e:
 		if ARG.fix_corrupted_h5:
 			print("Error in reading H5 file %s, trying to fix it."%(ARG.input_h5))
@@ -214,7 +228,7 @@ def correlation2d_estimate_COR(proj0: np.ndarray, proj180: np.ndarray) -> float:
 		proj180_flipped, 
 		upsample_factor=20# higher gives better subpixel precision
 	)
-	dx = -shift[1] # We need negative shift to shift proj180_flipped to proj0
+	dx = shift[1] # We need negative shift to shift proj180_flipped to proj0
 	# COR shift is half the projection misalignment
 	center_offset = dx / 2.0
 	W = proj0.shape[1]
@@ -378,6 +392,46 @@ def getAveragedFrames(inputFile, theta, delta_theta_rad, df, xdim_reduced):
 	avg_frame /= len(frames_in_range)
 	return avg_frame
 
+def averageFrames(inputFile, theta, delta_theta_rad, df):
+	"""
+	Average frames within an angular range around `theta` without any
+	sub-pixel shift or interpolation.
+
+	Args:
+		inputFile (str):		Path to the input file containing projection data.
+		theta (float):			Central angle in degrees.
+		delta_theta_rad (float):Half-width of the angular window in radians.
+		df (pd.DataFrame):		DataFrame with columns 's_rot' and 'frame_ind'.
+		xdim_reduced (int):		Width to crop each frame to (takes the centre
+								columns if smaller than the full width, or pass
+								the full width to skip cropping).
+
+	Returns:
+		np.ndarray or None: Float64 averaged frame, or None if no frames found.
+	"""
+	delta_theta = 180.0 * delta_theta_rad / np.pi
+	lower_angle = theta - delta_theta
+	upper_angle = theta + delta_theta
+	frames_in_range = df[
+		(df["s_rot"] >= lower_angle) & (df["s_rot"] <= upper_angle)
+	]
+	print(
+		f"For theta={theta}° and delta_theta={delta_theta}°: "
+		f"{len(frames_in_range)} frames found within the range "
+		f"[{lower_angle}°, {upper_angle}°]"
+	)
+	if len(frames_in_range) == 0:
+		print(f"No frames found within the range for theta={theta}° ± {delta_theta}°.")
+		return None
+	acc = None
+	for frame_idx in frames_in_range["frame_ind"]:
+		raw = DEN.getFrame(inputFile, frame_idx).astype(np.float64)
+		if acc is None:
+			acc = raw
+		else:
+			acc += raw
+	return acc / len(frames_in_range)
+
 
 #There is likely that the dataset does not contain given angle. In that case use interpolation
 #Otherwise use matching frames
@@ -435,13 +489,31 @@ def getInterpolatedFrame(inputFile, df, angle):
 
 
 #Equaly spaced Y indices
-if ARG.sample_count < 1 or ARG.sample_count > ydim:
-	raise ValueError("Invalid sample_count=%d" % ARG.sample_count)
-ySequence = np.array(np.round(
-	np.linspace(0, ydim, num=ARG.sample_count + 2, endpoint=True))[1:-1],
-					 dtype=np.int32)
-if ARG.sample_count == ydim:
-	ySequence = np.arange(ydim)
+illuminated_region = None
+if ARG.regions_json is not None:
+	if not os.path.isfile(ARG.regions_json):
+		raise IOError("File %s does not exist" % os.path.abspath(ARG.regions_json))
+	import json
+	with open(ARG.regions_json, "r") as f:
+		regions = json.load(f)
+		illuminated_region = regions.get("illuminated_region", None)
+		illuminated_region_snr = regions.get("illuminated_region_snr", None)
+		if illuminated_region_snr is not None:
+			illuminated_region = illuminated_region_snr
+		subregions = regions.get("subregions", [])
+		if not subregions:
+			raise ValueError("No subregions found in %s" % os.path.abspath(ARG.regions_json))
+		ySequence = np.array([int(r["max_row"]) for r in subregions if "max_row" in r], dtype=np.int32)
+	if len(ySequence) == 0:
+		raise ValueError("No max_row values found in subregions of %s" % os.path.abspath(ARG.regions_json))
+else:
+	if ARG.sample_count < 1 or ARG.sample_count > ydim:
+		raise ValueError("Invalid sample_count=%d" % ARG.sample_count)
+	ySequence = np.array(np.round(
+		np.linspace(0, ydim, num=ARG.sample_count + 2, endpoint=True))[1:-1],
+						 dtype=np.int32)
+	if ARG.sample_count == ydim:
+		ySequence = np.arange(ydim)
 
 if ARG.angle_count < 1:
 	raise ValueError("Invalid angle_count=%d" % ARG.angle_count)
@@ -473,6 +545,159 @@ while maxTestAngle > maxAngle and optimalAngleCount > 5:
 	maxTestAngle = angleSequence[optimalAngleCount-1]
 
 
+def _max_rect_in_histogram(h: np.ndarray) -> Tuple[int, int, int, int]:
+	"""
+	Returns (max_area, col_start, col_end, height) for the largest rectangle
+	that fits under histogram h.  col_end is exclusive.
+	"""
+	stack = []	 # stack of column indices
+	max_area = 0
+	best = (0, 0, 0, 0)
+	W = len(h)
+	for i in range(W + 1):
+		cur_h = h[i] if i < W else 0
+		start = i
+		while stack and h[stack[-1]] > cur_h:
+			j = stack.pop()
+			width = i - (stack[-1] + 1 if stack else 0)
+			area = h[j] * width
+			if area > max_area:
+				max_area = area
+				col_s = stack[-1] + 1 if stack else 0
+				best = (max_area, col_s, i, h[j])
+			start = j
+		stack.append(start)
+	return best
+
+def largest_nonzero_rectangle(mask: np.ndarray) -> Tuple[int, int, int, int]:
+	"""
+	Find the largest axis-aligned rectangle fully inside the nonzero region of mask.
+	
+	Returns (row_start, row_end, col_start, col_end)  — all exclusive on the end,
+	so you can use them directly as  arr[row_start:row_end, col_start:col_end].
+	
+	Algorithm: for each row, build a histogram of consecutive nonzero pixels
+	ending at that row, then run the O(W) "largest rectangle in histogram" sweep.
+	"""
+	mask_bin = (mask != 0).astype(np.int32)
+	H, W = mask_bin.shape
+	# histogram[j] = number of consecutive nonzero rows up to current row, at column j
+	histogram = np.zeros(W, dtype=np.int32)
+	best_area = 0
+	best = (0, 0, 0, 0)  # (row_start, row_end, col_start, col_end)
+	for r in range(H):
+		# Update histogram: reset to 0 where mask is 0, else increment
+		histogram = np.where(mask_bin[r] > 0, histogram + 1, 0)
+		# Largest rectangle in this histogram (stack-based O(W))
+		area, col_start, col_end, height = _max_rect_in_histogram(histogram)
+		if area > best_area:
+			best_area = area
+			best = (r - height + 1, r + 1, col_start, col_end)
+	return best
+
+def _max_rect_in_histogram(h: np.ndarray) -> Tuple[int, int, int, int]:
+	"""
+	Returns (max_area, col_start, col_end, height) for the largest rectangle
+	that fits under histogram h.  col_end is exclusive.
+	"""
+	stack: list[int] = []
+	max_area = 0
+	best = (0, 0, 0, 0)
+	W = len(h)
+	for i in range(W + 1):
+		cur_h = int(h[i]) if i < W else 0
+		while stack and h[stack[-1]] > cur_h:
+			height = int(h[stack.pop()])
+			left = stack[-1] + 1 if stack else 0
+			width = i - left
+			area = height * width
+			if area > max_area:
+				max_area = area
+				best = (max_area, left, i, height)
+		stack.append(i)
+	return best
+
+
+def largest_nonzero_rectangle(
+	mask: np.ndarray,
+	fill_threshold: float = 0.90,
+) -> Tuple[int, int, int, int]:
+	"""
+	Find the largest axis-aligned rectangle whose mask fill >= fill_threshold.
+
+	Strategy:
+	  1. Strip all-zero border rows and columns completely.
+	  2. Within the remaining region, further restrict to rows and columns
+		 whose fill fraction >= fill_threshold (removes sparse edges).
+	  3. Run the exact maximal-rectangle-in-histogram algorithm on the
+		 thresholded binary mask inside that tight bounding box.
+
+	Returns (row_start, row_end, col_start, col_end) — exclusive on the end,
+	suitable for arr[row_start:row_end, col_start:col_end].
+	"""
+	mask_bin = (mask != 0).astype(np.int32)
+	H, W = mask_bin.shape
+	# ── Step 1: strip all-zero border rows / cols ──────────────────────────
+	row_any = mask_bin.any(axis=1)	 # True for rows that have at least one nonzero
+	col_any = mask_bin.any(axis=0)
+	if not row_any.any() or not col_any.any():
+		raise ValueError("Mask is entirely zero — cannot find a valid rectangle.")
+	r0 = int(np.argmax(row_any))
+	r1 = int(H - np.argmax(row_any[::-1]))	 # exclusive
+	c0 = int(np.argmax(col_any))
+	c1 = int(W - np.argmax(col_any[::-1]))	 # exclusive
+	sub = mask_bin[r0:r1, c0:c1]
+	sH, sW = sub.shape
+	# ── Step 2: restrict to rows/cols with fill >= fill_threshold ──────────
+	row_fill = sub.mean(axis=1)   # fraction of nonzero pixels per row
+	col_fill = sub.mean(axis=0)   # fraction of nonzero pixels per col
+	row_ok = row_fill >= fill_threshold
+	col_ok = col_fill >= fill_threshold
+	if not row_ok.any() or not col_ok.any():
+		raise ValueError(
+			f"No row/column exceeds fill_threshold={fill_threshold:.0%}. "
+			"Try lowering fill_threshold."
+		)
+	# Find the contiguous run of acceptable rows/cols (take the longest run)
+	def longest_true_run(arr: np.ndarray) -> Tuple[int, int]:
+		"""Return (start, end) exclusive of the longest contiguous True run."""
+		best_start, best_len = 0, 0
+		cur_start, cur_len = 0, 0
+		for i, v in enumerate(arr):
+			if v:
+				if cur_len == 0:
+					cur_start = i
+				cur_len += 1
+				if cur_len > best_len:
+					best_len = cur_len
+					best_start = cur_start
+			else:
+				cur_len = 0
+		return best_start, best_start + best_len
+	rs, re = longest_true_run(row_ok)	# relative to sub
+	cs, ce = longest_true_run(col_ok)	# relative to sub
+	# ── Step 3: exact maximal rectangle inside the restricted region ────────
+	region = sub[rs:re, cs:ce]
+	rH, rW = region.shape
+	histogram = np.zeros(rW, dtype=np.int32)
+	best_area = 0
+	best_rect = (0, 0, 0, 0)
+	for r in range(rH):
+		histogram = np.where(region[r] > 0, histogram + 1, 0)
+		area, col_s, col_e, height = _max_rect_in_histogram(histogram)
+		if area > best_area:
+			best_area = area
+			best_rect = (r - height + 1, r + 1, col_s, col_e)
+	# ── Convert coordinates back to original mask space ────────────────────
+	rr0, rr1, rc0, rc1 = best_rect
+	return (
+		r0 + rs + rr0,
+		r0 + rs + rr1,
+		c0 + cs + rc0,
+		c0 + cs + rc1,
+	)
+
+
 #Specific procedure to get range [0, 180) st. distance to next angle after 180 allows for flipping and angle is still in the data
 angleSequence = np.linspace(0, 360, num=2*ARG.angle_count, endpoint=False)
 angleSequence = angleSequence[:ARG.angle_count]
@@ -491,15 +716,46 @@ if maxAngle < maxTestAngle:
 
 #Do some rough estimation based on few angles
 delta_theta_rad = 5.0 * pix_size # This means +-5 pixels around given angle
-frame0 = getAveragedFrames(ARG.inputFile, 0, delta_theta_rad, df, xdim_reduced=xdim)
-frame180 = getAveragedFrames(ARG.inputFile, 180, delta_theta_rad, df, xdim_reduced=xdim)
+#frame0 = getAveragedFrames(ARG.inputFile, 0, delta_theta_rad, df, xdim_reduced=xdim)
+#frame180 = getAveragedFrames(ARG.inputFile, 180, delta_theta_rad, df, xdim_reduced=xdim)
+frame0 = averageFrames(ARG.inputFile, 0, delta_theta_rad, df)
+frame180 = averageFrames(ARG.inputFile, 180, delta_theta_rad, df)
+detector_center = 0.5 * (frame0.shape[1] - 1)
+cor_offset = 0
+if ARG.input_mask is not None:
+	mask = DEN.getFrame(ARG.input_mask, 0)
+	if mask.shape[0] != ydim or mask.shape[1] != xdim:
+		raise ValueError("Mask shape %s does not match expected shape (%d, %d)"%(mask.shape, ydim, xdim))
+	#Find cropping rectangle in which mask is nonzero
+	row_start, row_end, col_start, col_end = largest_nonzero_rectangle(mask)
+	#Crop the mask to the largest nonzero rectangle
+	frame0 = frame0[row_start:row_end, col_start:col_end]
+	frame180 = frame180[row_start:row_end, col_start:col_end]
+	cor_offset = col_start
+	print(f"Cropping to largest nonzero rectangle in mask: rows {row_start}:{row_end}, cols {col_start}:{col_end} cor_offset={cor_offset}. New frame shape: {frame0.shape}.")
 if frame0 is not None and frame180 is not None:
-	estimated_COR = correlation2d_estimate_COR(frame0, frame180)
-	detector_center = 0.5 * (xdim - 1)
+	if ARG.crop_percent is not None and ARG.crop_percent > 0 or illuminated_region is not None:
+		current_width = frame0.shape[1]
+		crop_pixels = int(ARG.crop_percent * current_width / 100.0)
+		if illuminated_region is not None:
+			x_min = int(illuminated_region["x_min"])
+			x_max = int(illuminated_region["x_max"])
+			crop_right = current_width - (x_max + 1)
+			crop_pixels = max(crop_pixels, crop_right, x_min)
+		frame0 = frame0[:, crop_pixels:-crop_pixels]
+		frame180 = frame180[:, crop_pixels:-crop_pixels]
+		cor_offset += crop_pixels
+		print(f"Cropping {ARG.crop_percent}% of sinogram from each side, resulting in {frame0.shape[1]} pixels.")
+	estimated_COR = correlation2d_estimate_COR(frame0, frame180) + cor_offset
 	global_rotation_center_offset_pix = estimated_COR - detector_center
 	print(f"Estimated global COR={estimated_COR:.2f} pixels, detector center={detector_center:.2f} pixels", flush=True)
 	print("global_rotation_center_offset_pix=%f"%(global_rotation_center_offset_pix), flush=True)
 	print("global_rotation_center_offset=%f"%(global_rotation_center_offset_pix*pix_size), flush=True)
+
+if ARG.cross_correlation:
+	# If the user requested only the cross-correlation method, we can exit after printing the result.
+	print("Cross-correlation method completed. Exiting as requested.")
+	sys.exit(0)
 
 sinogram_center_correction = 0.0
 
@@ -548,19 +804,19 @@ elif ARG.center_implementation:
 else:
 	# Each projection k has its own detector coordinate system with origin 0_k.
 	# We only know relative offsets between detectors:
-	#     0_k - 0_j = pix_shift_k - pix_shift_j
+	#	  0_k - 0_j = pix_shift_k - pix_shift_j
 	#
 	# To unify all projections, we introduce a global coordinate system by
 	# choosing the detector with the smallest shift as reference (global origin).
 	# This makes all shifts non-negative:
-	#     0_k -> pix_shift_k - min(pix_shift)
+	#	  0_k -> pix_shift_k - min(pix_shift)
 	#
 	# In this global system, projection k spans:
-	#     [pix_shift_k, pix_shift_k + xdim)
+	#	  [pix_shift_k, pix_shift_k + xdim)
 	#
 	# The common valid region across all projections is the intersection of
 	# these intervals, which has width:
-	#     xdim_reduced = xdim - ceil(max(pix_shift))
+	#	  xdim_reduced = xdim - ceil(max(pix_shift))
 	#
 	# This corresponds to applying integer alignment via cropping, while
 	# any remaining subpixel misalignment is handled separately.
@@ -581,16 +837,16 @@ else:
 		# slightly changes the effective global coordinate system.
 		#
 		# The true extent of all projections is:
-		#     [0, xdim + maxshift]
+		#	  [0, xdim + maxshift]
 		# while the integer-aligned construction assumes:
-		#     [0, xdim + maxintshift]
+		#	  [0, xdim + maxintshift]
 		#
 		# These intervals have different centers:
-		#     true center    = 0.5 * (xdim + maxshift - 1)
-		#     integer center = 0.5 * (xdim + maxintshift - 1)
+		#	  true center	 = 0.5 * (xdim + maxshift - 1)
+		#	  integer center = 0.5 * (xdim + maxintshift - 1)
 		#
 		# The difference between these centers is:
-		#     0.5 * (maxintshift - maxshift)
+		#	  0.5 * (maxintshift - maxshift)
 		#
 		# This offset is stored in `sinogram_center_correction` and compensates
 		# for the subpixel error introduced by rounding shifts to integers.
@@ -933,9 +1189,14 @@ for j in range(len(ySequence)):
 	MIN = 0
 	width = sinogram.shape[1]
 	sinogram_center = 0.5 * width - 0.5
-	if ARG.crop_percent is not None and ARG.crop_percent > 0:
+	if ARG.crop_percent is not None and ARG.crop_percent > 0 or illuminated_region is not None:
 		crop = int(width * ARG.crop_percent / 100)
 		crop_side = crop // 2
+		if illuminated_region is not None:
+			x_min = int(illuminated_region["x_min"])
+			x_max = int(illuminated_region["x_max"])
+			crop_right = width - (x_max + 1)
+			crop_side = max(crop_side, crop_right, x_min)
 		if width - 2 * crop_side < 2:
 			raise ValueError("Too much crop, consider value less than 50%, width=%d crop=%d" % (width, crop))
 		sinogram = sinogram[:, crop_side:width - crop_side]
@@ -960,8 +1221,9 @@ for j in range(len(ySequence)):
 		else:
 			cache = COR.JsonCache()
 		start_offset = global_rotation_center_offset_pix
-		test_radius = width//16
-		cor = COR.estimate_cor(sinogram, j, angleSequence, start_offset=start_offset, test_radius=test_radius, refinement_steps=15, metric="ridge_sato", apply_log=False, cache=cache, verbose=ARG.verbose)
+		#test_radius = width//16
+		test_radius = 10
+		cor = COR.estimate_cor(sinogram, j, angleSequence, start_offset=start_offset, test_radius=test_radius, refinement_steps=5, metric="ridge_sato", apply_log=False, cache=cache, verbose=ARG.verbose)
 		offsets[j] = cor - sinogram_center
 		print("j=%d y=%d/%d offset[j]=%0.2f" % (j, ySequence[j], ydim, offsets[j]))
 	elif ARG.svd:
