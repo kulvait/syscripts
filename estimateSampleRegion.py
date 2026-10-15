@@ -325,17 +325,23 @@ def plot_profiles(args, results, profiles, bucket_edges, title):
         score = profiles[-1][1]
         for region in results["subregions"]:
             row = region["max_row"]
-            last_ax.plot(
-                row,
-                score[row],
-                "ro",
-                label=f"Bucket {region['id'] + 1} selected row",
-            )
-
+            last_ax.plot(row, score[row], "ro")
+        fig.text(
+            0.5,
+            0.01,
+            "Dark blue lines: illuminated region from reference profile. "
+            "Light blue lines: illuminated region from SNR. "
+            "Orange dashed lines: bucket boundaries. "
+            "Red dots: selected representative rows.",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+        
         # Build legends after all artists, including bucket markers, exist.
         for ax in axes:
             ax.legend()
-        fig.tight_layout()
+        fig.tight_layout(rect=[0, 0.03, 1, 1])
 
         if args.out_pdf is not None:
             fig.savefig(str(args.out_pdf), format="pdf")
