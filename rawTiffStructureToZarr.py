@@ -34,6 +34,22 @@ import numcodecs
 import zipfile
 from numcodecs import Blosc, GZip, VLenUTF8
 from pathlib import Path
+import time
+from datetime import timedelta
+import logging
+
+# Create a logger specific to this module
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO) # Set the logging level to INFO
+# Create a console handler and set its level to INFO
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+# Create a formatter and set it for the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s:%(lineno)d - %(levelname)s : %(message)s', datefmt='%d.%m.%Y %H:%M:%S')
+ch.setFormatter(formatter)
+# Add the handler to the logger
+log.addHandler(ch)
+log.propagate = False # Prevent log messages from being propagated to the root logger
 
 parser = argparse.ArgumentParser()
 parser.add_argument("inputh5")
@@ -58,9 +74,6 @@ parser.add_argument("--zip", action="store_true", help="Use zip store for Zarr o
 parser.add_argument("--v2", action="store_true", help="Use Zarr v2 format instead of v3 (default: False, use v3).")
 parser.add_argument("--verbose", action="store_true")
 
-import sys
-import time
-from datetime import timedelta
 
 start_time = time.time()
 script_name = sys.argv[0]
@@ -230,29 +243,34 @@ def scanForTiffFiles(directory, exclude_files):
 
 def sanitize_for_json(obj):
 	"""
-	Recursively convert obj so it can be JSON-serialized:
+	Convert metadata to JSON-compatible values.
+
+	Recursively collapse singleton arrays/lists/tuples to their underlying
+	value. Preserve empty sequences and sequences with multiple elements.
 	- numpy scalars -> Python scalars
 	- numpy arrays	-> lists
 	- dict/list/tuple -> recurse
 	- leave Python scalars/None/str as-is
 	"""
-	# NumPy scalars -> Python scalars
-	if isinstance(obj, (np.generic,)):# covers np.float32, np.int64, np.bool_, etc.
-		return obj.item()
 	# NumPy arrays -> lists (be careful with very large arrays; attrs should stay small)
 	if isinstance(obj, np.ndarray):
-		return obj.tolist()
+		return sanitize_for_json(obj.tolist())
+	# NumPy scalars -> Python scalars
+	if isinstance(obj, np.generic):
+		return sanitize_for_json(obj.item())
+	if isinstance(obj, (bytes, bytearray)):
+		try:
+			return obj.decode("utf-8")
+		except UnicodeDecodeError:
+			return obj.decode("utf-8", errors="replace")
 	# Mappings -> recurse
 	if isinstance(obj, dict):
 		return {str(k): sanitize_for_json(v) for k, v in obj.items()}
 	# Sequences -> recurse element-wise
 	if isinstance(obj, (list, tuple)):
-		return [sanitize_for_json(x) for x in obj]
-	if isinstance(obj, (bytes, bytearray, np.bytes_)):
-		try:
-			return obj.decode("utf-8")
-		except UnicodeDecodeError:
-			return obj.decode("utf-8", errors="replace")
+		if len(obj) == 1:
+			return sanitize_for_json(obj[0])
+		return [sanitize_for_json(value) for value in obj]
 	# Everything else: assume already JSON-safe (str, int, float, bool, None)
 	return obj
 
@@ -311,11 +329,14 @@ def copy_h5_arrays_into_group(
 			raise ValueError(f"HDF5 entry '{entry}' is neither a group nor a dataset, cannot copy.")
 	#Update group attributes at the end to avoid issues with copying datasets that have attributes with the same name as group attributes
 	for k, v in attributes.items():
-		if isinstance(v, (bytes, np.bytes_)):
-			v = v.decode("utf-8")
-		if isinstance(v, np.generic):
-			v = v.item()
-		zarr_params_group.attrs[k] = v
+		if verbose:
+			print(f"Processing attribute {h5.name}@{k}", flush=True)
+		try:
+			value = sanitize_for_json(v)
+			json.dumps(value)
+		except (TypeError, ValueError, OverflowError) as exc:
+			raise ValueError(f"Cannot convert HDF5 attribute {h5.name}@{k} to JSON: type={type(v).__name__}, value={v!r}") from exc
+		zarr_params_group.attrs[k] = value
 	if verbose:
 		print("Finished copying HDF5 arrays into Zarr group:", zarr_params_group.path)
 
