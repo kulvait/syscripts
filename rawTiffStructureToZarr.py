@@ -336,7 +336,7 @@ if os.path.exists(ARG.outputZarr):
 	else:
 		raise IOError(f"File {ARG.outputZarr} exists, use --force to overwrite")
 
-df = PETRA.scanDataset(ARG.inputh5, includeCurrent=True)
+df = PETRA.scanDataset(ARG.inputh5, includeCurrent=False)
 experimentInfo = PETRA.getExperimentInfo(ARG.inputh5)
 export = {}
 
