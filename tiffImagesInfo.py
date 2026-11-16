@@ -33,6 +33,20 @@ import time
 from skimage.restoration import denoise_tv_chambolle
 from scipy.ndimage import convolve1d
 from scipy.signal import find_peaks
+import logging
+
+# Create a logger specific to this module
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO) # Set the logging level to INFO
+# Create a console handler and set its level to INFO
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+# Create a formatter and set it for the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s:%(lineno)d - %(levelname)s : %(message)s', datefmt='%d.%m.%Y %H:%M:%S')
+ch.setFormatter(formatter)
+# Add the handler to the logger
+log.addHandler(ch)
+log.propagate = False # Prevent log messages from being propagated to the root logger
 
 parser = argparse.ArgumentParser()
 parser.add_argument(

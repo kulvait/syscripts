@@ -104,13 +104,13 @@ try:
 		}
 		df = pd.DataFrame(dat)
 	elif ARG.override_magnification is not None:
-		df = PETRA.imageDataset(ARG.inputGeometryInfo, includePixelShift=True, overrideMagnification=float(ARG.override_magnification))
+		df = PETRA.imageDataset(ARG.inputGeometryInfo, includeCurrent=False, includePixelShift=True, overrideMagnification=float(ARG.override_magnification))
 	else:
-		df = PETRA.imageDataset(ARG.inputGeometryInfo, includePixelShift=True)
+		df = PETRA.imageDataset(ARG.inputGeometryInfo, includeCurrent=False, includePixelShift=True)
 except Exception as e:
 	print(colored("Error: %s"%e, "red"))
 	if ARG.fix_corrupted_h5:
-		print("Corrupted h5 file fix by np.linspace.")
+		print("Corrupted h5 file fix by np.linspace.", file=sys.stderr)
 		data = {"frame_ind":np.arange(zdim),"s_rot":np.linspace(0, 180, num=zdim, endpoint=False),"pixel_shift":np.zeros(zdim)}
 		df = pd.DataFrame(data)
 	else:
