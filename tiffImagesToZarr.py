@@ -105,23 +105,6 @@ def _init_writer_worker(lock):
     _write_lock = lock
 # END threading setup
 
-
-def get_compressor(name, clevel=5):
-    """Return a zarr-compatible compressor based on name."""
-    if name == 'none':
-        return None
-    elif name == 'zstd' or name == 'blosc-zstd':
-        return Blosc(cname='zstd', clevel=clevel, shuffle=Blosc.BITSHUFFLE)
-    elif name == 'lz4' or name == 'blosc-lz4':
-        return Blosc(cname='lz4', clevel=clevel, shuffle=Blosc.BITSHUFFLE)
-    elif name == 'gzip' or name == 'blosc-zlib':
-        return GZip(level=clevel)
-    elif name == 'blosc' or name == 'blosc-blosclz':
-        return Blosc(cname='blosclz', clevel=clevel, shuffle=Blosc.BITSHUFFLE)
-    else:
-        raise ValueError(f"Unknown compression type: {name}")
-
-
 def get_compressor(name, clevel=5, zarrv3=False, outtype=None, endian="little"):
     """
     Return a zarr-compatible compressor/codec based on name and Zarr format version.
@@ -449,13 +432,22 @@ def progress_callback(result):
 
 def writeZarrFile(inputTifFiles, zarrFile, *,
                   force=False, dtype=None,
-                  compression='zstd', clevel=5, zarrv3=False, verbose=False):
+                  compression='zstd', clevel=5, zarrv3=False, zipStore=False, verbose=False):
     """Convert a TIFF stack to a 3D Zarr array."""
     if os.path.exists(zarrFile):
         if force:
-            shutil.rmtree(zarrFile)
+            if os.path.isdir(zarrFile):
+                shutil.rmtree(zarrFile)
+            elif os.path.isfile(zarrFile):
+                os.remove(zarrFile)
+            elif os.islink(zarrFile):
+                os.unlink(zarrFile)
+            else:
+                raise IOError(f"Path {zarrFile} exists but is neither a file nor a directory.")
         else:
             raise IOError(f"File {zarrFile} exists, use --force to overwrite")
+    if zipStore and zarrv3 == False:
+        raise ValueError("zipStore option requires zarrv3=True")
 
     im0 = np.array(Image.open(inputTifFiles[0]))
     dimy, dimx = im0.shape
@@ -493,15 +485,15 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
         print("For input compression:", compression, "clevel:", clevel)
         print(codec)
     # Create the base resolution level (s0)
-        if ARG.zip or ARG.outputZarr.endswith(".zip"):
-            store = zarr.storage.ZipStore(ARG.outputZarr, mode='w')
-        else:
-            store = ARG.outputZarr
+    if zipStore or ARG.outputZarr.endswith('.zip'):
+        store = zarr.storage.ZipStore(ARG.outputZarr, mode='w')
+    else:
+        store = ARG.outputZarr
     # Create Zarr array
     if zarrv3:
         # Use new create_array API
         zarr_array = zarr.create_array(
-            store=zarrFile,
+            store=store,
             shape=(n_images, dimy, dimx),
             chunks=chunk_shape,
             dtype=outtype,
@@ -511,7 +503,7 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
     else:
         # Classic v2
         zarr_array = zarr.open_array(
-            zarrFile,
+            store=store,
             mode='w',
             shape=(n_images, dimy, dimx),
             chunks=chunk_shape,
@@ -551,6 +543,7 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
                     colored(f"Error processing '{tiffFile}' at index {kIndex}:\n{error}", "red"))
             raise RuntimeError(
                 f"{len(errors)} errors occurred during TIFF processing. See above for details.")
+
     if ARG.verbose:
         print(colored(f"Zarr array written to {zarrFile}", "cyan"))
 
@@ -792,6 +785,7 @@ if __name__ == '__main__':
             compression=ARG.compression,
             clevel=ARG.clevel,
             zarrv3=ARG.zarrv3,
+            zipStore=ARG.zip,
             verbose=ARG.verbose
         )
 
