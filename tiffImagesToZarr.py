@@ -25,7 +25,6 @@ import zarr
 import shutil
 from pathlib import Path
 from skimage.measure import block_reduce
-import dask.array as da
 from multiprocessing.dummy import Pool, Lock  # threads
 import multiprocessing as mp
 from multiprocessing import Value
@@ -693,13 +692,6 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
             group_name, shape=level_shape, dtype=outtype, chunks=chunk_shape, compressors=codec)
         zarr_array[:] = block_reduce(zarr_array_s0[:], block_size=(
             2**level, 2**level, 2**level), func=np.mean)
-        # Use Dask for efficient downsampling
-
-        def block_reduce_block(block):
-            return block_reduce(block, block_size=(2**level, 2**level, 2**level), func=np.mean)
-        # zarr_da = da.from_zarr(zarr_array_s0)
-        # reduced = da.map_blocks(block_reduce_block, zarr_da, dtype=zarr_da.dtype)
-        # zarr_array[:] = reduced.compute()
     if verbose:
         print(f"Neuroglancer Zarr pyramid written to {zarrFile}")
 

@@ -73,6 +73,9 @@ log.addHandler(ch)
 log.propagate = False # Prevent log messages from being propagated to the root logger
 
 
+# Codecs of ZAR.get_compressor that are array-to-bytes codecs (serializer in zarr v3)
+IMAGE_CODECS = ['avif', 'jpeg2k', 'htj2k', 'jpegxl', 'jpegxr', 'sz3', 'zfp']
+
 # Global variables for controling I/O and synchronization in workers
 inputIsZarr = False
 outputIsZarr = False
@@ -96,16 +99,18 @@ def processFrame(ARG, k):
 			f = inputArray[k]
 		else:
 			f = DEN.getFrame(ARG.inputFile, k)
+		# Write: under the lock with threads; without threads (-j 0) there is no lock, but the frame
+		# must be written too (it was skipped before)
 		if write_lock:
 			write_lock.acquire()
-			try:
-				if not outputIsZarr:
-					DEN.writeFrame(ARG.outputFile, k, f.astype(outputType), force=True)
-				else:
-					outputArray[k] = f.astype(outputType)
-			finally:
-				if write_lock:
-					write_lock.release()
+		try:
+			if not outputIsZarr:
+				DEN.writeFrame(ARG.outputFile, k, f.astype(outputType), force=True)
+			else:
+				outputArray[k] = f.astype(outputType)
+		finally:
+			if write_lock:
+				write_lock.release()
 		return {"k": k, "error": None}
 	except Exception:
 		return {"k": k, "error": traceback.format_exc()}
@@ -125,6 +130,13 @@ def main():
 	parser.add_argument("outputFile", help="Output array, DEN or Zarr format. For Zarr use /path/to/store:/array/path, without ':' it is interpreted as DEN file.")
 	parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
 	parser.add_argument("--keep-input-dtype", help="Keep input data type in output, otherwise output is float32.", action="store_true")
+	parser.add_argument('--zarr-compression', type=str,
+						choices=['none', 'zstd', 'lz4', 'gzip', 'blosc', 'blosc-blosclz', 'blosc-lz4', 'blosc-lz4hc',
+								 'blosc-snappy', 'blosc-zlib', 'blosc-zstd'] + IMAGE_CODECS,
+						default='blosc-zstd',
+						help="Compression if the output is Zarr (default: blosc-zstd).")
+	parser.add_argument('--zarr-clevel', type=float, default=5,
+						help="Compression level if the output is Zarr (default: 5; 0 is lossless for the image codecs).")
 	parser.add_argument("--verbose", help="increase output verbosity", action="store_true")
 	ARG = parser.parse_args()
 	
@@ -159,7 +171,7 @@ def main():
 		dimspec = header["dimspec"]
 		xdim = np.uint64(dimspec[0])
 		ydim = np.uint64(dimspec[1])
-		zdim = np.uint64(dimspec[2])
+		zdim = np.uint64(np.prod(dimspec[2:])) if len(dimspec) > 2 else np.uint64(1)  # all frames, also for 4D+
 		inputType = header["type"]
 	
 	if ARG.keep_input_dtype:
@@ -167,6 +179,7 @@ def main():
 	else:
 		outputType = np.float32
 	
+	xdim, ydim, zdim = int(xdim), int(ydim), int(zdim)
 	frameSize = xdim * ydim
 	totalSize = frameSize * zdim
 	
@@ -181,7 +194,7 @@ def main():
 			zarOutputStore = zarr.storage.ZipStore(outputZarStorePath, mode="a")
 			zarOutputStore._sync_open() # After this fix might be removed https://github.com/zarr-developers/zarr-python/issues/3846
 		else:
-			zarOutputStore = zarr.storage.LocalStore(outputZarStorePath, mode="a")
+			zarOutputStore = zarr.storage.LocalStore(outputZarStorePath)
 		outputIsZarr = True
 		try:
 			outputArray = zarr.open_array(zarOutputStore, mode="r+", path=zarPath)
@@ -197,14 +210,18 @@ def main():
 		if not outputArrayExists:
 			log.info(f"Creating Zarr array in store '{outputZarStorePath}' with path '{zarPath}'")
 			codec = ZAR.get_compressor(ARG.zarr_compression, clevel=ARG.zarr_clevel, zarrv2=False, dtype=outputType)
+			if ARG.zarr_compression in IMAGE_CODECS:
+				codec_arguments = {"serializer": codec[0]}
+			else:
+				codec_arguments = {"compressors": codec}
 			outputArray = zarr.create_array(
 					store=zarr.storage.StorePath(zarOutputStore, zarPath),
 					shape=(zdim, ydim, xdim),
 					chunks=(1, ydim, xdim),
 					dtype=outputType,
-					compressors=codec,
 					zarr_format=3,
 					overwrite=True,
+					**codec_arguments,
 				)
 	else:
 		DEN.writeEmptyDEN(ARG.outputFile, dimspec, force=True, elementtype=outputType)
@@ -234,23 +251,17 @@ def main():
 		tp.join()
 	
 	errors = []
-	total_pixels_corrected = 0
-	total_frames_sucessful = 0
 	for result in results:
 		r = result.get()
-		k = r["k"]
 		if r["error"] is not None:
 			errors.append((r["k"], r["error"]))
 	
 	if len(errors) > 0:
-		log.error(f"{zdim - total_frames_sucessful}/{zdim} frames raised the following exceptions:")
+		log.error(f"{len(errors)}/{zdim} frames raised the following exceptions:")
 		for (k, error) in errors:
 			log.error(f"Frame {k} exception:\n{error}")
-		else:
-			total_pixels_fraction = 0.0
-			log.error("Processing failed for all frames, no pixels corrected in '%s'."%(ARG.outputFile))
-	else:
-		total_pixels_fraction = total_pixels_corrected / totalSize
+	if outputIsZarr and isinstance(zarOutputStore, zarr.storage.ZipStore):
+		zarOutputStore.close()  # complete the zip
 	end_time = time.time()
 	elapsed_time = end_time - start_time
 	seconds = elapsed_time % 60
@@ -258,7 +269,9 @@ def main():
 	hours = int(minutes // 60)
 	minutes = minutes % 60
 	formatted_time = f"{hours}h {minutes}m {seconds:.2f}s" if hours > 0 else (f"{minutes}m {seconds:.2f}s" if minutes > 0 else f"{seconds:.2f}s")
-	log.info("END zarrToDer.py, elapsed time: %s."%(formatted_time,))
+	log.info("END zarrToDen.py, elapsed time: %s."%(formatted_time,))
+	if len(errors) > 0:
+		sys.exit(1)
 
 if __name__ == "__main__":
 	main()

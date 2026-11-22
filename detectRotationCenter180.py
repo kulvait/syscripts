@@ -867,8 +867,7 @@ if ARG.store_sinograms is not None:
 	outpath = Path(ARG.store_sinograms)
 	if outpath.suffix == ".zar" or outpath.suffix == ".zarr":
 		# ---- Write Zarr instead of DEN ----
-		# Create Zarr directory store
-		store = zarr.DirectoryStore(str(outpath))
+		# (zarr 3 has no DirectoryStore; save_array writes the directory store itself)
 		# Create array (overwrite existing when force=True)
 		if outpath.exists() and ARG.force:
 			# delete existing Zarr directory

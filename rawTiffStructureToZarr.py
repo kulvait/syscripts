@@ -12,6 +12,18 @@ import pandas as pd
 #pd.set_option('display.max_columns', 100) to display untruncated columns
 from PIL import Image
 from PIL.TiffTags import TAGS
+try:
+	import tifffile  # about twice as fast as PIL and releases the GIL, so the reading threads scale
+except ImportError:
+	tifffile = None
+
+
+def read_tiff(path):
+	"""The image of a TIFF file as a numpy array (tifffile if available, else PIL)."""
+	if tifffile is not None:
+		return tifffile.imread(path)
+	with Image.open(path) as im:
+		return np.array(im)
 import sys
 import os
 import argparse
@@ -22,6 +34,8 @@ import io
 from contextlib import redirect_stdout
 from contextlib import redirect_stderr
 import zarr
+# Threads, not processes: all writers share one store. A ZipStore must not be used from several
+# processes (each would reopen the zip with mode "w", truncating it); its lock serializes the writes.
 from multiprocessing.dummy import Pool, Lock  # threads
 import multiprocessing as mp
 from multiprocessing import Value
@@ -76,6 +90,14 @@ parser.add_argument("--verbose", action="store_true")
 
 
 start_time = time.time()
+_phase_time = [start_time]
+
+
+def report_phase(name):
+	"""Print the time spent since the previous phase, to see where a conversion spends its time."""
+	now = time.time()
+	print(f"TIME {name}: {now - _phase_time[0]:.1f}s", flush=True)
+	_phase_time[0] = now
 script_name = sys.argv[0]
 script_params = " ".join(sys.argv[1:])
 
@@ -139,8 +161,7 @@ def tiffImageToArrayIndex(tiffFile, outArray, kIndex):
 	target_dtype = np.dtype(outArray.dtype)
 	# ---- Read TIFF ----
 	try:
-		with Image.open(tiffFile) as im:
-			img = np.array(im)
+		img = read_tiff(tiffFile)
 	except Exception as e:
 		raise ValueError(f"Failed to read TIFF file '{tiffFile}': {e}")
 	# ---- Check shape ----
@@ -203,8 +224,8 @@ def writeZarrArray(df, zarrArray, inputDir):
 		for i, f in enumerate(inputTifFiles):
 			start = timer()
 			tiffImageToArrayIndex(f, zarrArray, i)
-			if ARG.verbose and (i % 100 == 0 or i == n_images - 1):
-				print(f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
+			if ARG.verbose and (i % 100 == 0 or i == len(inputTifFiles) - 1):
+				print(f"Written frame {i+1}/{len(inputTifFiles)} ({os.path.basename(f)}) in {timer()-start:.3f}s")
 	else:
 		results = []
 		with Pool(ARG.j, initializer=_init_writer_worker, initargs=(Lock(),)) as pool:
@@ -274,6 +295,32 @@ def sanitize_for_json(obj):
 	# Everything else: assume already JSON-safe (str, int, float, bool, None)
 	return obj
 
+def h5_group_attributes(h5, verbose=True):
+	"""JSON-safe attributes of an HDF5 group: its attributes and its scalar datasets."""
+	attributes = {}
+	for entry in list(h5):
+		if isinstance(h5[entry], h5py.Dataset) and h5[entry].shape == ():
+			# Scalar datasets are stored as attributes to preserve their value
+			val = h5[entry][()]
+			if isinstance(val, (bytes, np.bytes_)):
+				val = val.decode("utf-8")
+			if isinstance(val, np.generic):
+				val = val.item()
+			attributes[entry] = val
+	attributes.update(dict(h5.attrs))  # attributes of the group win over scalar datasets of the same name
+	sanitized = {}
+	for k, v in attributes.items():
+		if verbose:
+			print(f"Processing attribute {h5.name}@{k}", flush=True)
+		try:
+			value = sanitize_for_json(v)
+			json.dumps(value)
+		except (TypeError, ValueError, OverflowError) as exc:
+			raise ValueError(f"Cannot convert HDF5 attribute {h5.name}@{k} to JSON: type={type(v).__name__}, value={v!r}") from exc
+		sanitized[k] = value
+	return sanitized
+
+
 def copy_h5_arrays_into_group(
 	h5,
 	zarr_params_group: zarr.Group,
@@ -283,22 +330,17 @@ def copy_h5_arrays_into_group(
 	verbose: bool = True,
 ) -> None:
 	"""
-	Copy all HDF5 N-D datasets from `h5_path` (under `src_group`) into the given Zarr group.
+	Copy all HDF5 N-D datasets and subgroups of `h5` into the given Zarr group, which must already
+	carry the attributes of `h5` (h5_group_attributes). Subgroups are created with their attributes,
+	so that no group metadata is rewritten afterwards (in a zip store every rewrite adds an entry).
 	Preserves shapes, dtypes, attributes and subgroup structure.
 	"""
-	attributes = dict(h5.attrs)
 	for entry in list(h5):
 		if verbose:
 			print(f"Processing HDF5 entry: {h5.name}/{entry}  type={type(h5[entry])}")
 		if isinstance(h5[entry], h5py.Dataset):
-			# Store scalar datasets as 1D arrays to preserve dtype and attributes, even if they are shape=() in HDF5
 			if h5[entry].shape == ():
-				val = h5[entry][()]
-				if isinstance(val, (bytes, np.bytes_)):
-					val = val.decode("utf-8")
-				if isinstance(val, np.generic):
-					val = val.item()
-				attributes[entry] = val
+				continue  # scalar dataset, an attribute of the group (h5_group_attributes)
 			elif h5[entry].dtype == np.dtype("O") or h5[entry].dtype.kind == 'S':
 				# Handle object/string arrays by converting to UTF-8 strings in Zarr
 				str_array = h5[entry][:]
@@ -323,20 +365,10 @@ def copy_h5_arrays_into_group(
 				if verbose:
 					print(f"[dataset] {h5.name}/{entry}  shape={h5[entry].shape}	dtype={h5[entry].dtype}  -> zarr dtype={za.dtype}  chunks={za.chunks}")
 		elif isinstance(h5[entry], h5py.Group):
-			subgroup = zarr_params_group.require_group(entry)
-			copy_h5_arrays_into_group(h5[entry], subgroup)
+			subgroup = zarr_params_group.create_group(entry, attributes=h5_group_attributes(h5[entry], verbose=verbose))
+			copy_h5_arrays_into_group(h5[entry], subgroup, compressor=compressor, verbose=verbose)
 		else:
 			raise ValueError(f"HDF5 entry '{entry}' is neither a group nor a dataset, cannot copy.")
-	#Update group attributes at the end to avoid issues with copying datasets that have attributes with the same name as group attributes
-	for k, v in attributes.items():
-		if verbose:
-			print(f"Processing attribute {h5.name}@{k}", flush=True)
-		try:
-			value = sanitize_for_json(v)
-			json.dumps(value)
-		except (TypeError, ValueError, OverflowError) as exc:
-			raise ValueError(f"Cannot convert HDF5 attribute {h5.name}@{k} to JSON: type={type(v).__name__}, value={v!r}") from exc
-		zarr_params_group.attrs[k] = value
 	if verbose:
 		print("Finished copying HDF5 arrays into Zarr group:", zarr_params_group.path)
 
@@ -357,6 +389,7 @@ if os.path.exists(ARG.outputZarr):
 	else:
 		raise IOError(f"File {ARG.outputZarr} exists, use --force to overwrite")
 
+report_phase("setup")
 df = PETRA.scanDataset(ARG.inputh5, includeCurrent=False)
 experimentInfo = PETRA.getExperimentInfo(ARG.inputh5)
 export = {}
@@ -372,11 +405,10 @@ else:
 	tiff_file_path = os.path.join(inputDir, tiff_file_str.lstrip("/"))
 	if not os.path.exists(tiff_file_path):
 		raise FileNotFoundError(f"TIFF file {tiff_file_path} does not exist, cannot determine image dimensions and dtype.")
-	with Image.open(tiff_file_path) as img:
-		img_array = np.array(img)
-		dimy, dimx = img_array.shape
-		dtype = img_array.dtype
-		print(f"Determined image dimensions: {dimx}x{dimy}, dtype: {dtype}")
+	img_array = read_tiff(tiff_file_path)
+	dimy, dimx = img_array.shape
+	dtype = img_array.dtype
+	print(f"Determined image dimensions: {dimx}x{dimy}, dtype: {dtype}")
 
 if dtype is None:
 	raise ValueError("Could not determine dtype of TIFF images, cannot proceed.")
@@ -417,6 +449,12 @@ elif ARG.compression == "jpegxr":
 dark = df.loc[df["image_key"] == 2]
 white = df.loc[df["image_key"] == 1]
 scan = df.loc[df["image_key"] == 0]
+
+if ARG.fix_corrupted_h5 and scan.empty:
+	# before the arrays are created, so that img gets the number of the found images
+	print("HDF5 file is corrupted. Scanning directory for TIFF files to create img.den...")
+	exclude_files = set(dark["image_file"]).union(set(white["image_file"]))
+	scan = scanForTiffFiles(inputDir, exclude_files)
 
 df_json = json.loads(df.to_json(orient="split", date_format="iso"))
 
@@ -475,23 +513,25 @@ except zipfile.BadZipFile as e:
 	print(f"Error details: {e}")
 	sys.exit(1)
 
-zarr_params = zarr_top_level.create_group(name="params", attributes=df_json)
 h5 = h5py.File(ARG.inputh5, "r")
 if "entry" in h5:
 	h5 = h5["entry"]
+# df_json and the HDF5 attributes (these win, as before) are written once, with the group
+zarr_params = zarr_top_level.create_group(name="params", attributes={**df_json, **h5_group_attributes(h5, verbose=ARG.verbose)})
 copy_h5_arrays_into_group(h5, zarr_params, verbose=ARG.verbose)
+report_phase("HDF5 scan table, arrays and metadata")
 
 writeZarrArray(dark, zarr_array_dar, inputDir)
+report_phase(f"dar ({dar_count} frames)")
 writeZarrArray(white, zarr_array_ref, inputDir)
-
-if ARG.fix_corrupted_h5 and scan.empty:
-	print("HDF5 file is corrupted. Scanning directory for TIFF files to create img.den...")
-	dark_files = set(dark["image_file"])
-	white_files = set(white["image_file"])
-	exclude_files = dark_files.union(white_files)
-	scan = scanForTiffFiles(inputDir, exclude_files)
+report_phase(f"ref ({ref_count} frames)")
 
 writeZarrArray(scan, zarr_array_img, inputDir)
+report_phase(f"img ({img_count} frames)")
+
+if isinstance(store, zarr.storage.ZipStore):
+	store.close()
+	report_phase("closing the zip")
 
 elapsed_seconds = int(time.time() - start_time)
 
