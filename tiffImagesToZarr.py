@@ -34,11 +34,7 @@ import os
 import sys
 
 
-from ome_zarr.format import FormatV04
-from ome_zarr.format import FormatV05
-from ome_zarr.io import parse_url as omezarr_parse_url
-from ome_zarr.writer import write_image as omezarr_write_image
-from ome_zarr.writer import add_metadata as omezarr_add_metadata
+from denpy import ZARPYRAMID  # OME-NGFF pyramids with plain zarr (replaces ome_zarr)
 
 import re
 from denpy import UTILS
@@ -67,7 +63,16 @@ parser.add_argument('--clevel', type=int, default=5,
 parser.add_argument('--zarrv3', action='store_true',
                     help="Write Zarr v3 store instead of v2.")
 parser.add_argument('--ome', action='store_true',
-                    help="Write OME-Zarr instead of plain.")
+                    help="Write an OME-NGFF image (OME-Zarr 0.5 with --zarrv3, else 0.4) with a pyramid, see --pyramid-*; "
+                         "written with plain zarr by denpy.ZARPYRAMID.")
+parser.add_argument('--pyramid-levels', type=int, default=5,
+                    help="--ome: number of pyramid levels including full resolution (default 5, as ome-zarr).")
+parser.add_argument('--pyramid-axes', choices=['yx', 'zyx'], default='yx',
+                    help="--ome: reduce Y,X per level keeping Z (yx, default, as ome-zarr) or Z,Y,X (zyx, 3D).")
+parser.add_argument('--pyramid-method', choices=['mean', 'nearest', 'max', 'min'], default='mean',
+                    help="--ome: how a block becomes one sample of the next level (default mean).")
+parser.add_argument('--pyramid-factor', type=int, default=2,
+                    help="--ome: reduction factor between levels (default 2).")
 parser.add_argument('--neuroglancer', action='store_true',
                     help="Write Zarr in Neuroglancer Precomputed format.")
 parser.add_argument('--max-level', type=int, default=5,
@@ -134,7 +139,7 @@ def get_compressor(name, clevel=5, zarrv3=False, outtype=None, endian="little"):
         itemsize = 1
 
     if not zarrv3:
-        from numcodecs import Blosc, GZip as NcGZip
+        from numcodecs import Blosc, GZip
         # Old style compressors (zarr v2 compatible)
         if name == 'none':
             return None
@@ -165,7 +170,11 @@ def get_compressor(name, clevel=5, zarrv3=False, outtype=None, endian="little"):
         elif name == "zstd":
             codecs_chain.append(codecs.ZstdCodec(level=clevel))
         elif name == "lz4":
-            codecs_chain.append(codecs.LZ4Codec(level=clevel))
+            try:
+                from zarr.codecs.numcodecs import LZ4  # zarr >= 3.1.3
+            except ImportError:
+                from numcodecs.zarr3 import LZ4
+            codecs_chain.append(LZ4())  # LZ4 has no compression level
         elif name == "gzip":
             codecs_chain.append(codecs.GzipCodec(level=clevel))
         elif name == "blosc" or name == "blosc-blosclz":
@@ -307,68 +316,28 @@ def format_time(seconds):
 
 def writeOMEZarr(inputTifFiles, zarrFile, *,
                  force=False, dtype=None,
-                 compression='zstd', clevel=5, zarrv3=False, verbose=False):
-    if os.path.exists(zarrFile):
-        if force:
-            shutil.rmtree(zarrFile)
-        else:
-            raise IOError(f"File {zarrFile} exists, use --force to overwrite")
-
+                 compression='zstd', clevel=5, zarrv3=False, spec=None, verbose=False):
+    """Write a TIFF stack (one TIFF per Z) as an OME-NGFF image with a pyramid (denpy.ZARPYRAMID, plain zarr)."""
     im0 = np.array(Image.open(inputTifFiles[0]))
     dimy, dimx = im0.shape
-    n_images = len(inputTifFiles)
-
-    # Determine output dtype if none it will be same as input TIF
-    if dtype is not None:
-        outtype = np.dtype(dtype)
-    else:
-        outtype = im0.dtype
-
+    outtype = np.dtype(dtype) if dtype is not None else im0.dtype
+    spec = spec if spec is not None else ZARPYRAMID.PyramidSpec()
+    if zarrFile.endswith(".zip") is False and ARG.zip:
+        raise ValueError("--ome --zip: give the output a .zip name")
+    shape = (len(inputTifFiles), dimy, dimx)
     if verbose:
-        print(
-            f"Creating OME-Zarr v3: shape=({n_images}, {dimy}, {dimx}), dtype={dtype}, compression={compression}, clevel={clevel}")
+        print(f"OME-NGFF pyramid: {spec.describe(shape)}")
 
-    # Precompute chunk shape based on image dimensions
-    if dimx > 512 and dimy > 512:
-        chunk_shape = (1, 256, 256)
-    else:
-        chunk_shape = (1, dimy, dimx)
-
-    # Create Zarr store and group (using OME-Zarr v3 format)
-    if zarrv3:
-        store = omezarr_parse_url(zarrFile, mode="w", fmt=FormatV05()).store
-    else:
-        store = omezarr_parse_url(zarrFile, mode="w", fmt=FormatV04()).store
-    root = zarr.group(store=store)
-
-    # Prepare the 3D image data array (ZYX axes)
-    image_data = np.zeros((n_images, dimy, dimx), dtype=outtype)
-
-    for i, f in enumerate(inputTifFiles):
-        start = timer()
-        img = np.array(Image.open(f))
-        if dtype == np.float32:
-            img = img.astype(np.float32)
-        if img.shape != (dimy, dimx):
-            raise ValueError(
-                f"Shape mismatch in {f}: got {img.shape}, expected {(dimy, dimx)}")
-        image_data[i, :, :] = img
-        if verbose and (i % 100 == 0 or i == n_images - 1):
-            print(
-                f"Written frame {i+1}/{n_images} ({os.path.basename(f)}) in {timer()-start:.3f}s")
-
-    # Write image data to OME-Zarr
-    omezarr_write_image(image=image_data, group=root, axes="zyx",
-                        storage_options=dict(chunks=chunk_shape, compressor=get_compressor(compression, clevel=clevel, zarrv3=zarrv3)))
-
-    # Add optional metadata for visualization and analysis
-    omezarr_add_metadata(root, {"omero": {
-        "channels": [{"color": "FF0000", "window": {"start": 0, "end": 20, "min": 0, "max": 255},
-                      "label": "Random Channel", "active": True}]
-    }})
-
+    def read_frame(k):
+        with Image.open(inputTifFiles[k]) as im:
+            return np.array(im)
+    ZARPYRAMID.write_pyramid(
+        zarrFile, read_frame, shape, outtype, spec,
+        zarr_format=3 if zarrv3 else 2,
+        compressors=get_compressor(compression, clevel=clevel, zarrv3=zarrv3, outtype=outtype),
+        overwrite=force, name=os.path.basename(zarrFile.rstrip("/")), verbose=verbose)
     if verbose:
-        print(f"OME-Zarr array written to {zarrFile}")
+        print(f"OME-NGFF image written to {zarrFile}")
 
 
 def tiffImageToArrayIndex(tiffFile, outArray, kIndex):
@@ -623,9 +592,9 @@ def writeNeuroglancerZarr(inputTifFiles, zarrFile, *,
         if matlab_params['par_eff_pixel_size_binned_um'] > 0:
             voxel_size_um = [pixel_size_um, pixel_size_um, pixel_size_um]
         elif matlab_params['par_eff_pixel_size_um'] > 0:
-            voxel_size_um = matlab_params['par_eff_pixel_size_um']
+            voxel_size_um = [matlab_params['par_eff_pixel_size_um']] * 3
     elif ARG.params is not None:
-        params = UTILS.readParamsFile(ARG.params)
+        params_dict = UTILS.readParamsFile(ARG.params)
         if 'pixel_size_x' in params_dict:
             voxel_size_um[0] = float(
                 params_dict['pixel_size_x']) * ARG.binning_factor
@@ -762,6 +731,8 @@ if __name__ == '__main__':
             compression=ARG.compression,
             clevel=ARG.clevel,
             zarrv3=ARG.zarrv3,
+            spec=ZARPYRAMID.PyramidSpec(levels=ARG.pyramid_levels, factor=ARG.pyramid_factor,
+                                        axes=ARG.pyramid_axes, method=ARG.pyramid_method),
             verbose=ARG.verbose
         )
     elif ARG.neuroglancer:
