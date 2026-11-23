@@ -83,7 +83,7 @@ parser.add_argument('--compression', type=str,
 					help="Compression type (default: blosc-zstd).")
 parser.add_argument('--clevel', type=float, default=5,
 					help="Compression level (default: 5).")
-parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
+parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1: a quarter of the CPUs available to the process (in a SLURM job its allocation), at least 16 and at most 32, but not more than available; 0 without threading]", dest="j")
 parser.add_argument("--zip", action="store_true", help="Use zip store for Zarr output instead of directory store.")
 parser.add_argument("--v2", action="store_true", help="Use Zarr v2 format instead of v3 (default: False, use v3).")
 parser.add_argument("--verbose", action="store_true")
@@ -123,13 +123,23 @@ ARG.inputh5 = str(Path(ARG.inputh5).resolve(strict=True))
 ARG.outputZarr = str(Path(ARG.outputZarr).resolve(strict=False))
 
 #Set up threading
+# Default thread count: a quarter of the CPUs this process may run on (a SLURM job's allocation, not
+# the whole node), kept between DEFAULT_MIN_THREADS and DEFAULT_MAX_THREADS. Measured on Maxwell with
+# 5120x3840 frames: reading the TIFFs limits the speed from about 16-32 threads on, 64 threads were
+# slower; on 40-CPU nodes HTJ2K needs 16 threads (CPU-bound). zarr runs the codecs in a pool of at
+# most 32 threads, and every thread holds frames in memory.
+DEFAULT_MIN_THREADS, DEFAULT_MAX_THREADS = 16, 32
+try:
+	AVAILABLE_CPUS = len(os.sched_getaffinity(0))
+except AttributeError:  # not on Linux
+	AVAILABLE_CPUS = mp.cpu_count()
 if ARG.j < 0:
-	ARG.j = mp.cpu_count()
-	print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()"%(ARG.j))
+	ARG.j = min(AVAILABLE_CPUS, max(DEFAULT_MIN_THREADS, min(AVAILABLE_CPUS // 4, DEFAULT_MAX_THREADS)))
+	print("Starting threadpool of %d threads (%d CPUs available; default a quarter of them, %d to %d)" % (ARG.j, AVAILABLE_CPUS, DEFAULT_MIN_THREADS, DEFAULT_MAX_THREADS))
 elif ARG.j == 0:
 	print("No threading will be used ARG.j=0.")
 else:
-	print("Starting threadpool of %d threads, optimal value multiprocessing.cpu_count()=%d"%(ARG.j, mp.cpu_count()))
+	print("Starting threadpool of %d threads, %d CPUs available" % (ARG.j, AVAILABLE_CPUS))
 
 _write_lock = None
 
@@ -198,6 +208,47 @@ def progress_callback(result):
 		print(f"Written {count}/{result['n_img']} frames, current: {result['kIndex']+1}/{result['n_img']} "
 			  f"({os.path.basename(result['tiffFile'])})")
 
+# Sizes of the input TIFF files per array (img, ref, dar), for the size report
+INPUT_TIFF_BYTES = {}
+
+
+def stored_bytes(output, prefixes):
+	"""Bytes stored in the Zarr output (directory or zip) under each of the top level prefixes."""
+	sizes = dict.fromkeys(prefixes, 0)
+	if os.path.isfile(output):
+		with zipfile.ZipFile(output) as z:
+			for info in z.infolist():
+				top = info.filename.split("/")[0]
+				if top in sizes:
+					sizes[top] += info.compress_size
+	else:
+		for top in prefixes:
+			for root, _, files in os.walk(os.path.join(output, top)):
+				sizes[top] += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+	return sizes
+
+
+def total_bytes(output):
+	if os.path.isfile(output):
+		return os.path.getsize(output)
+	return sum(os.path.getsize(os.path.join(root, f)) for root, _, files in os.walk(output) for f in files)
+
+
+def gib(n):
+	return n / 1024**3
+
+
+def report_sizes(output, codec_name, clevel):
+	"""Print the stored size of img, ref and dar compared with their input TIFF files."""
+	stored = stored_bytes(output, list(INPUT_TIFF_BYTES))
+	print(f"SIZE compression {codec_name} (clevel {clevel}):")
+	for name, tiff in INPUT_TIFF_BYTES.items():
+		ratio = tiff / stored[name] if stored[name] else float("nan")
+		print(f"SIZE   {name}: TIFF {gib(tiff):.3f} GiB -> Zarr {gib(stored[name]):.3f} GiB, ratio {ratio:.2f}x ({100 * stored[name] / tiff:.1f}% of TIFF)")
+	tiff, out = sum(INPUT_TIFF_BYTES.values()), total_bytes(output)
+	print(f"SIZE   total: TIFF {gib(tiff):.3f} GiB -> output {gib(out):.3f} GiB, ratio {tiff / out:.2f}x ({100 * out / tiff:.1f}% of TIFF, output includes the params metadata)")
+
+
 #To write dataframe to 
 def writeZarrArray(df, zarrArray, inputDir):
 	progress = Value('i', 0)   # atomic int
@@ -219,6 +270,7 @@ def writeZarrArray(df, zarrArray, inputDir):
 	else:
 		print(tifFilesBasename[0], tifFilesBasename[-1])
 	inputTifFiles = [ os.path.join(inputDir, f.lstrip("/")) for f in inputTifFiles ]
+	INPUT_TIFF_BYTES[zarrArray.basename] = sum(os.path.getsize(f) for f in inputTifFiles)
 	# Write images
 	if ARG.j == 0:
 		for i, f in enumerate(inputTifFiles):
@@ -532,6 +584,8 @@ report_phase(f"img ({img_count} frames)")
 if isinstance(store, zarr.storage.ZipStore):
 	store.close()
 	report_phase("closing the zip")
+
+report_sizes(ARG.outputZarr, ARG.compression, ARG.clevel)
 
 elapsed_seconds = int(time.time() - start_time)
 

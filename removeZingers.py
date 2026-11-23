@@ -9,10 +9,91 @@ import argparse
 import os
 import numpy as np
 import algotom.prep.removal as rem
+from scipy.ndimage import convolve
+from scipy import ndimage as ndi
 from denpy import DEN
 import multiprocessing
 from multiprocessing import Pool, Lock
 import traceback
+
+def select_zinger(mask, max_size):
+    """
+    Keep connected components smaller than max_size pixels.
+    """
+    labels, num = ndi.label(mask)
+    if num == 0:
+        return mask.astype(np.float32)
+    sizes = ndi.sum(mask, labels, index=np.arange(1, num + 1))
+    keep_labels = np.where(sizes <= max_size)[0] + 1
+    mat_out = np.isin(labels, keep_labels)
+    return mat_out.astype(np.float32)
+
+def remove_zinger_safe(frame, zinger_threshold, size=2, check_size=False, median_filter=True):
+    """
+    Safe and clean replacement for Algotom remove_zinger().
+
+    Improvements
+    ------------
+    - No circular wraparound artefacts (np.roll removed)
+    - Uses convolution with the same sparse neighbour pattern
+    - Robust normalization avoiding division by zero
+    - Threshold comparable to original implementation
+
+    Parameters
+    ----------
+    frame : array_like
+        2D projection or sinogram image.
+    zinger_threshold : float
+        Zinger detection zinger_threshold, higher is less sensitive.
+        Recommended range [0.05, 0.1].
+    size : int
+        Zinger size parameter.
+    check_size : bool
+        Optional size filtering via select_zinger().
+
+    Returns
+    -------
+    ndarray
+        Zinger-removed image.
+    """
+    frame = np.asarray(frame, dtype=np.float32)
+    k = 2 * size + 1
+    if median_filter:
+        frame_ave = ndi.median_filter(frame, size=k, mode="reflect")
+    else:
+        # --- Build sparse kernel frameching Algotom neighbour offsets ---
+        kernel = np.zeros((k, k), dtype=np.float32)
+        offsets = [
+            (-size, -size), (-size, 0), (-size, size),
+            (0, -size),                (0, size),
+            (size, -size),  (size, 0), (size, size),
+        ]
+        for di, dj in offsets:
+            kernel[size + di, size + dj] = 1.0
+        kernel /= kernel.sum()
+        # --- Local average using reflect padding (no periodic artefacts) ---
+        frame_ave = convolve(frame, kernel, mode="reflect")
+
+    # --- Robust normalization ---
+    eps = 1e-9 * np.mean(np.abs(frame_ave))
+    eps = max(eps, np.finfo(frame_ave.dtype).eps)
+
+    frame_nor = (frame - frame_ave) / (frame_ave + eps*np.sign(frame_ave))
+
+    # --- Detect positive outliers ---
+    mask_corrected_pixel = (np.abs(frame_nor) > zinger_threshold).astype(np.float32)
+
+    # Optional size filtering
+    if check_size:
+        mask_corrected_pixel = select_zinger(mask_corrected_pixel, size)
+
+    # --- Replace zingers with local average ---
+    out = frame.copy()
+    out[mask_corrected_pixel > 0] = frame_ave[mask_corrected_pixel > 0]
+
+    return out
+
+
 
 
 
@@ -21,7 +102,7 @@ parser.add_argument("inputDen")
 parser.add_argument("outputDen")
 parser.add_argument("--force", action="store_true")
 parser.add_argument("--verbose", action="store_true")
-parser.add_argument("--threshold", default=0.05, type=float, help="Threshold for zinger detection. [defaults to 0.05, recomended range 0.05-0.1]")
+parser.add_argument("--threshold", default=0.1, type=float, help="Threshold for zinger detection, higher is less sensitive. [defaults to 0.05, recomended range 0.05-0.1]")
 parser.add_argument("-j","--threads", default=-1, type=int, help="Number of threads to use. [defaults to -1 which is mp.cpu_count(), 0 without threading]", dest="j")
 ARG = parser.parse_args()
 
@@ -60,7 +141,7 @@ def init_worker(l):
 def processFrame(ARG, k):
 	try:
 		f = DEN.getFrame(ARG.inputDen, k)
-		f_cor = rem.remove_zinger(f, ARG.threshold)
+		f_cor = remove_zinger_safe(f, ARG.threshold)
 		f_cor = f_cor.astype(ntype)
 		if write_lock:
 			write_lock.acquire()

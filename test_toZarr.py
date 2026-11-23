@@ -23,7 +23,8 @@ DEN_TO_ZARR = os.path.join(HERE, "denToZarr.py")
 TIFF_TO_ZARR = os.path.join(HERE, "tiffImagesToZarr.py")
 ZARR_TO_DEN = os.path.join(HERE, "zarrToDen.py")
 RAW_TIFF_TO_ZARR = os.path.join(HERE, "rawTiffStructureToZarr.py")
-RECONSTRUCT_H5 = os.path.join(HERE, "reconstructBeamtimeH5.py")
+RECONSTRUCT_H5 = os.path.join(HERE, "zarrToBeamtimeH5.py")
+RAW_TIFF_TO_DEN = os.path.join(HERE, "rawTiffStructureToDen.py")
 sys.path.insert(0, HERE)
 import make_petra_test_data  # noqa: E402
 from imagecodecs.zarr import register_codecs as register_zarr_codecs  # noqa: E402
@@ -332,6 +333,25 @@ class TestRawTiffStructureToZarr(unittest.TestCase):
 		run(RAW_TIFF_TO_ZARR, "scan.h5", "out.zarr", "--fix-corrupted-h5", "-j", "0", cwd=d)
 		# img: all TIFFs that are neither the darks nor the refs listed in the HDF5
 		np.testing.assert_array_equal(zarr.open_group(os.path.join(d, "out.zarr"), mode="r")["img"][:], frames[5:])
+
+
+class TestRawTiffStructureToDen(unittest.TestCase):
+	"""rawTiffStructureToDen.py on the synthetic scans: float32 DEN files with the frames in order."""
+
+	def test_both_styles(self):
+		with tempfile.TemporaryDirectory() as tmp:
+			for style in make_petra_test_data.STYLES:
+				d = os.path.join(tmp, style)
+				keys, frames = make_petra_test_data.make(d, style)
+				keys = np.array(keys)
+				for threads in ("0", "3"):
+					with self.subTest(style=style, threads=threads):
+						out = run(RAW_TIFF_TO_DEN, "scan.h5", "den_" + threads, "--force", "-j", threads, cwd=d)
+						self.assertIn("SIZE   total", out)
+						for name, key in (("img", 0), ("ref", 1), ("dar", 2)):
+							den = DEN.getNumpyArray(os.path.join(d, "den_" + threads, name + ".den"))
+							self.assertEqual(den.dtype, np.float32)
+							np.testing.assert_array_equal(den, frames[keys == key].astype(np.float32))
 
 
 if __name__ == "__main__":

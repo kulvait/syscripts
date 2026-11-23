@@ -17,7 +17,7 @@ The scan table of rawTiffStructureToZarr.py (params attributes columns/index/dat
 attributes of the top level group (experiment info, export settings) are not part of the HDF5
 file and are not written. The images are not written; they are the dar/ref/img arrays of the store.
 
-Usage: reconstructBeamtimeH5.py INPUT.zarr|INPUT.zip OUTPUT.h5 [--force]
+Usage: zarrToBeamtimeH5.py INPUT.zarr|INPUT.zip OUTPUT.h5 [--force]
 """
 import argparse
 import json
