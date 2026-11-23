@@ -30,6 +30,7 @@ import argparse
 from denpy import DEN
 from denpy import ZAR
 from denpy import PETRA
+from denpy import ZARZS  # zip store that threads write in parallel
 import io
 from contextlib import redirect_stdout
 from contextlib import redirect_stderr
@@ -468,12 +469,14 @@ if dtype is None:
 if dtype != np.uint16:
 	raise ValueError(f"Warning: TIFF images are of type {dtype}, expected uint16. This may lead to unexpected behavior.")
 
-if ARG.compression in ["zfp", "sz3"]:
-	# For integer types smaller then int32, zfp requires at least 32 bits, so we need to upcast to int32
+if ARG.compression == "zfp":
+	# zfp supports int32, int64, float32 and float64 only: smaller integers become int32 (exact for uint16)
 	if np.issubdtype(dtype, np.integer) and dtype.itemsize < 4:
-		outtype = np.uint32
+		outtype = np.int32
 	else:
 		outtype = dtype
+elif ARG.compression == "sz3":
+	outtype = np.float32 if dtype.itemsize <= 4 else np.float64  # sz3 supports floating point only
 else:
 	outtype = dtype  # Keep the same dtype as the original TIFF images
 
@@ -532,7 +535,7 @@ experimentInfo["export"] = export
 experimentInfo_sanitized = sanitize_for_json(experimentInfo)
 
 if ARG.zip or ARG.outputZarr.endswith(".zip"):
-	store = zarr.storage.ZipStore(ARG.outputZarr, mode='w')
+	store = ZARZS.ZipStore(ARG.outputZarr, mode="w")  # threads write their chunks in parallel
 else:
 	store = ARG.outputZarr
 
@@ -547,14 +550,13 @@ codec = ZAR.get_compressor(ARG.compression, ARG.clevel, zarrv2=ARG.v2, dtype=out
 try:
 	if not ARG.v2:
 		# In Zarr v3 we can set the compressor at the group level and it will be inherited by all arrays
-		if ARG.compression in ['avif', 'jpeg2k', 'htj2k', 'jpegxl', 'jpegxr', 'sz3', 'zfp']:
-			zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
-			zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
-			zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, serializer = codec[0])
-		else:
-			zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
-			zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
-			zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressors=codec)
+		# codec_arguments: an image codec (htj2k, jpeg2k, ...) is the serializer and no compressor is
+		# added (without compressors=None zarr appends its default zstd, compressing the image codec's
+		# output a second time for nothing); other codecs are the compressors
+		codec_arguments = ZAR.codec_arguments(codec)
+		zarr_array_ref = zarr_top_level.create_array('ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, **codec_arguments)
+		zarr_array_dar = zarr_top_level.create_array('dar', shape=(dar_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, **codec_arguments)
+		zarr_array_img = zarr_top_level.create_array('img', shape=(img_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, **codec_arguments)
 	else:
 		# In Zarr v2 we have to set the compressor on each array individually
 		zarr_array_ref = zarr.open_array(store=store, path='ref', shape=(ref_count, dimy, dimx), dtype=outtype, chunks=chunk_shape, compressor=codec, zarr_format=2, mode='w')

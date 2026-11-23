@@ -44,6 +44,7 @@ Hot pixel / zinger removal tool for 2D/3D image stacks.
 import argparse
 from denpy import DEN 
 from denpy import ZAR
+from denpy import ZARZS  # zip store that threads read and write in parallel
 import zarr
 import numpy as np
 from multiprocessing.dummy import Process, Lock, Pool
@@ -99,18 +100,18 @@ def processFrame(ARG, k):
 			f = inputArray[k]
 		else:
 			f = DEN.getFrame(ARG.inputFile, k)
-		# Write: under the lock with threads; without threads (-j 0) there is no lock, but the frame
-		# must be written too (it was skipped before)
-		if write_lock:
-			write_lock.acquire()
-		try:
-			if not outputIsZarr:
-				DEN.writeFrame(ARG.outputFile, k, f.astype(outputType), force=True)
-			else:
-				outputArray[k] = f.astype(outputType)
-		finally:
+		# Write: DEN under the lock with threads; Zarr in parallel (one frame per chunk, and
+		# ZARZS.ZipStore writes zip entries in parallel)
+		if outputIsZarr:
+			outputArray[k] = f.astype(outputType)
+		else:
 			if write_lock:
-				write_lock.release()
+				write_lock.acquire()
+			try:
+				DEN.writeFrame(ARG.outputFile, k, f.astype(outputType), force=True)
+			finally:
+				if write_lock:
+					write_lock.release()
 		return {"k": k, "error": None}
 	except Exception:
 		return {"k": k, "error": traceback.format_exc()}
@@ -155,7 +156,7 @@ def main():
 		if zarPath == "/":
 			zarPath = ""
 		if zarStorePath.endswith(".zip") or zarStorePath.endswith(".zar"):
-			zarInputStore = zarr.storage.ZipStore(zarStorePath)
+			zarInputStore = ZARZS.ZipStore(zarStorePath, mode="r")  # threads read in parallel
 		else:
 			zarInputStore = zarr.storage.LocalStore(zarStorePath)
 		log.info(f"Opening Zarr array from store '{zarStorePath}' with path '{zarPath}'")
@@ -191,7 +192,7 @@ def main():
 		if zarPath == "/":
 			zarPath = ""
 		if outputZarStorePath.endswith(".zip") or outputZarStorePath.endswith(".zar"):
-			zarOutputStore = zarr.storage.ZipStore(outputZarStorePath, mode="a")
+			zarOutputStore = ZARZS.ZipStore(outputZarStorePath, mode="a")  # threads write in parallel, arrays can be overwritten
 			zarOutputStore._sync_open() # After this fix might be removed https://github.com/zarr-developers/zarr-python/issues/3846
 		else:
 			zarOutputStore = zarr.storage.LocalStore(outputZarStorePath)
@@ -200,7 +201,7 @@ def main():
 			outputArray = zarr.open_array(zarOutputStore, mode="r+", path=zarPath)
 			if outputArray.shape != (zdim, ydim, xdim) or outputArray.dtype != outputType:
 				asyncio.run(zarOutputStore.delete(zarPath))
-				log.warning(f"Existing Zarr array in store '{outputZarStorePath}' with path '{zarPath}' has incompatible shape {outputArray.shape} or dtype {outputArray.dtype}, expected shape {(zdim, ydim, xdim)} and dtype {outputType}. It will be overwritten and for some stores (e.g. ZipStore) this leads to NotImplementedError")	
+				log.warning(f"Existing Zarr array in store '{outputZarStorePath}' with path '{zarPath}' has incompatible shape {outputArray.shape} or dtype {outputArray.dtype}, expected shape {(zdim, ydim, xdim)} and dtype {outputType}. It will be overwritten.")	
 				outputArrayExists = False
 			else:
 				log.info(f"Using existing Zarr array in store '{outputZarStorePath}' with path '{zarPath}'")
@@ -210,10 +211,8 @@ def main():
 		if not outputArrayExists:
 			log.info(f"Creating Zarr array in store '{outputZarStorePath}' with path '{zarPath}'")
 			codec = ZAR.get_compressor(ARG.zarr_compression, clevel=ARG.zarr_clevel, zarrv2=False, dtype=outputType)
-			if ARG.zarr_compression in IMAGE_CODECS:
-				codec_arguments = {"serializer": codec[0]}
-			else:
-				codec_arguments = {"compressors": codec}
+			# an image codec is the serializer, with no compressor after it (zarr would append zstd)
+			codec_arguments = ZAR.codec_arguments(codec)
 			outputArray = zarr.create_array(
 					store=zarr.storage.StorePath(zarOutputStore, zarPath),
 					shape=(zdim, ydim, xdim),

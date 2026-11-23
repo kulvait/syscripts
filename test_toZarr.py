@@ -301,7 +301,9 @@ class TestRawTiffStructureToZarr(unittest.TestCase):
 		for style in self.scans:
 			with self.subTest(style=style):
 				self.check(style, "scan.zip", "--zip", "-j", "2")
-				names = zipfile.ZipFile(os.path.join(self.scans[style][0], "scan.zip")).namelist()
+				with zipfile.ZipFile(os.path.join(self.scans[style][0], "scan.zip")) as z:
+					names = z.namelist()
+					self.assertIsNone(z.testzip())  # CRC-32 of every entry (written in parallel by ParallelZipStore)
 				self.assertEqual(len(names), len(set(names)), [n for n in set(names) if names.count(n) > 1])
 
 	def test_reconstruct_h5(self):
@@ -332,6 +334,189 @@ class TestRawTiffStructureToZarr(unittest.TestCase):
 					data.create_dataset(f"{name}/{part}", data=v)
 		run(RAW_TIFF_TO_ZARR, "scan.h5", "out.zarr", "--fix-corrupted-h5", "-j", "0", cwd=d)
 		# img: all TIFFs that are neither the darks nor the refs listed in the HDF5
+		np.testing.assert_array_equal(zarr.open_group(os.path.join(d, "out.zarr"), mode="r")["img"][:], frames[5:])
+
+
+def zarr_differences(a, b, path="", ignore_attributes=(), skip=()):
+	"""Differences between two zarr groups: attributes, arrays (metadata without the attributes, values)
+	and subgroups; ignore_attributes are (path, key) pairs not compared, skip are member paths."""
+	problems = []
+	attrs_a = {k: v for k, v in a.attrs.items() if (path, k) not in ignore_attributes}
+	attrs_b = {k: v for k, v in b.attrs.items() if (path, k) not in ignore_attributes}
+	if attrs_a != attrs_b:
+		keys = sorted(k for k in set(attrs_a) | set(attrs_b) if attrs_a.get(k) != attrs_b.get(k))
+		problems.append(f"{path or '/'}: attributes differ in {keys}")
+	names_a, names_b = set(a.keys()), set(b.keys())
+	if names_a != names_b:
+		problems.append(f"{path or '/'}: members {sorted(names_a ^ names_b)} only in one")
+	for name in sorted(names_a & names_b):
+		x, y, sub = a[name], b[name], f"{path}/{name}"
+		if sub in skip:
+			continue
+		if isinstance(x, zarr.Group) != isinstance(y, zarr.Group):
+			problems.append(f"{sub}: group and array")
+		elif isinstance(x, zarr.Group):
+			problems.extend(zarr_differences(x, y, sub, ignore_attributes, skip))
+		else:
+			meta_x = {k: v for k, v in x.metadata.to_dict().items() if k != "attributes"}
+			meta_y = {k: v for k, v in y.metadata.to_dict().items() if k != "attributes"}
+			for meta in (meta_x, meta_y):
+				# rawTiffStructureToZarr.py gives image codecs as serializer only, so zarr adds its
+				# default zstd compressor after them (compressing compressed chunks); denpy.TIFF does not
+				codecs = meta.get("codecs")
+				if codecs and len(codecs) == 2 and codecs[0]["name"].startswith("imagecodecs_") and codecs[1]["name"] == "zstd":
+					meta["codecs"] = codecs[:1]
+			if meta_x != meta_y:
+				problems.append(f"{sub}: metadata {meta_x} != {meta_y}")
+			if dict(x.attrs) != dict(y.attrs):
+				problems.append(f"{sub}: attributes differ")
+			if x.dtype.kind in "OTU" or str(x.dtype).startswith("<U") or "str" in str(x.dtype).lower():
+				same = [str(v) for v in np.asarray(x[...]).ravel()] == [str(v) for v in np.asarray(y[...]).ravel()]
+			else:
+				same = np.array_equal(x[...], y[...])
+			if not same:
+				problems.append(f"{sub}: values differ")
+	return problems
+
+
+def lautools_available():
+	import importlib.util
+	try:
+		return importlib.util.find_spec("lautools.scripts.tiffScanDataToZarrForMicrotomography") is not None
+	except ModuleNotFoundError:
+		return False
+
+
+@unittest.skipUnless(lautools_available(), "lautools is not importable")
+class TestLautoolsMicrotomography(unittest.TestCase):
+	"""lautools tiffScanDataToZarrForMicrotomography (on denpy.TIFF and PETRA.ScanDescription) against
+	rawTiffStructureToZarr.py: the same arrays and root attributes, apart from the output path; the
+	params groups are the same scan description (PETRA.ScanDescription, the canonical form: the new
+	store has the single strings of 2021 files as strings, not one-element arrays) as the HDF5 file,
+	with the same scan table."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.tmp = tempfile.TemporaryDirectory()
+		cls.scans = {style: (os.path.join(cls.tmp.name, style), *make_petra_test_data.make(os.path.join(cls.tmp.name, style), style))
+					 for style in make_petra_test_data.STYLES}
+		cls.env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
+
+	@classmethod
+	def tearDownClass(cls):
+		cls.tmp.cleanup()
+
+	def lautools(self, *args, cwd, code=0):
+		"""Run the command; returns its output (stdout and stderr)."""
+		out = subprocess.run([sys.executable, "-m", "lautools.scripts.tiffScanDataToZarrForMicrotomography", *args],
+							 cwd=cwd, capture_output=True, text=True, env=self.env)
+		self.assertEqual(out.returncode, code, out.stdout[-3000:] + out.stderr[-3000:])
+		return out.stdout + out.stderr
+
+	def test_same_as_raw_tiff_structure_to_zarr(self):
+		for style in self.scans:
+			for target, args in (("zstd.zarr", []), ("htj2k.zip", ["--zip", "--compression", "htj2k", "--clevel", "0"]),
+								 ("v2.zarr", ["--v2"]), ("none.zip", ["--zip", "--compression", "none"])):
+				with self.subTest(style=style, target=target):
+					d = self.scans[style][0]
+					run(RAW_TIFF_TO_ZARR, "scan.h5", "raw_" + target, "--force", "-j", "2", *args, cwd=d)
+					self.lautools("scan.h5", "new_" + target, "-j", "2", *args, cwd=d)
+					old, new = open_group(os.path.join(d, "raw_" + target)), open_group(os.path.join(d, "new_" + target))
+					export_old, export_new = dict(old.attrs["export"]), dict(new.attrs["export"])
+					self.assertEqual(export_old.pop("output_zarr_path"), os.path.join(d, "raw_" + target))
+					self.assertEqual(export_new.pop("output_zarr_path"), os.path.join(d, "new_" + target))
+					self.assertEqual(export_old, export_new)
+					self.assertEqual(zarr_differences(old, new, ignore_attributes={("", "export")}, skip={"/params"}), [])
+					from lautools import PETRA
+					description = PETRA.ScanDescriptionFactory.fromZarr(new)
+					self.assertEqual(PETRA.ScanDescriptionFactory.fromZarr(old).differences(description), [])
+					self.assertEqual(PETRA.ScanDescriptionFactory.fromH5(os.path.join(d, "scan.h5")).differences(description), [])
+					for key in ("columns", "index", "data"):
+						self.assertEqual(old["params"].attrs[key], new["params"].attrs[key])
+
+	def test_spec_den_and_report(self):
+		import json
+		d, keys, frames = self.scans["2025"]
+		keys = np.array(keys)
+		self.lautools("scan.h5", "den", "--den", "--write-spec", "spec.json", "--report", "report.json", cwd=d)
+		for name, key in (("img", 0), ("ref", 1), ("dar", 2)):
+			den = DEN.getNumpyArray(os.path.join(d, "den", name + ".den"))
+			self.assertEqual(den.dtype, np.uint16)  # the TIFF dtype, no float32 conversion
+			np.testing.assert_array_equal(den, frames[keys == key])
+		with open(os.path.join(d, "den", "params.json")) as f:
+			self.assertIn("scan", json.load(f))
+		with open(os.path.join(d, "spec.json")) as f:
+			spec = json.load(f)
+		self.assertEqual(sorted(spec["tiffstacks"]), ["dar", "img", "ref"])
+		with open(os.path.join(d, "report.json")) as f:
+			self.assertEqual(json.load(f)["arrays"]["img"]["shape"], [int((keys == 0).sum()), 32, 48])
+
+	def test_den_drop_in_for_raw_tiff_structure_to_den(self):
+		# into an existing working directory as the pipelines call rawTiffStructureToDen.py (h5 . --force)
+		d, keys, frames = self.scans["2021"]
+		keys = np.array(keys)
+		wd = os.path.join(d, "wd_den")
+		os.makedirs(wd, exist_ok=True)
+		with open(os.path.join(wd, "keep.txt"), "w") as f:
+			f.write("keep")
+		run(RAW_TIFF_TO_DEN, "scan.h5", "old_den", "--force", "-j", "2", cwd=d)
+		self.lautools(os.path.join(d, "scan.h5"), ".", "--den", "--dtype", "float32", "--force", "--raw-dir", d, "-j", "2", cwd=wd)
+		for name in ("img", "ref", "dar"):
+			new = DEN.getNumpyArray(os.path.join(wd, name + ".den"))
+			np.testing.assert_array_equal(new, DEN.getNumpyArray(os.path.join(d, "old_den", name + ".den")))
+			self.assertEqual(new.dtype, np.float32)
+		self.assertEqual(sorted(os.listdir(wd)), ["dar.den", "img.den", "keep.txt", "params.json", "ref.den"])
+		out = self.lautools(os.path.join(d, "scan.h5"), ".", "--den", "--raw-dir", d, cwd=wd, code=1)  # no --force
+		self.assertIn("exist", out)
+
+	def test_spec_extension_and_dry_run(self):
+		import json
+		d, keys, frames = self.scans["2025"]
+		keys = np.array(keys)
+		extension = {"virtualstacks": {"dar_median": {"stack": "dar", "reduce": "median", "dtype": "uint16"}},
+					 "arrays": {"dar_median": {"stack": "dar_median"},
+								"img": {"stack": "img", "dtype": "uint16", "clip": True, "args": ["dar_median"],
+										"lambda": "lambda x, d: x.astype('int32') - d"}}}
+		with open(os.path.join(d, "ext.json"), "w") as f:
+			json.dump(extension, f)
+		out = self.lautools("scan.h5", "ext.zar", "--zip", "--spec-extension", "ext.json", "--dry-run", cwd=d)
+		self.assertIn("dar_median", out)
+		self.assertFalse(os.path.exists(os.path.join(d, "ext.zar")))
+		self.lautools("scan.h5", "ext.zar", "--zip", "--compression", "htj2k", "--clevel", "0", "--spec-extension", "ext.json", cwd=d)
+		group = zarr.open_group(zarr.storage.ZipStore(os.path.join(d, "ext.zar"), mode="r"), mode="r")
+		median = np.rint(np.median(frames[keys == 2], axis=0)).astype(np.uint16)
+		np.testing.assert_array_equal(group["dar_median"][:], median)
+		np.testing.assert_array_equal(group["img"][:], np.clip(frames[keys == 0].astype(np.int32) - median, 0, None).astype(np.uint16))
+		np.testing.assert_array_equal(group["ref"][:], frames[keys == 1])
+		self.assertIn("params", group)
+
+	def test_missing_frame(self):
+		d = os.path.join(self.tmp.name, "missing")
+		keys, frames = make_petra_test_data.make(d)
+		names = sorted(f for f in os.listdir(d) if f.endswith("_img.tif"))
+		os.remove(os.path.join(d, names[1]))  # in the HDF5, not on disk
+		out = self.lautools("scan.h5", "out.zarr", cwd=d, code=1)
+		self.assertIn("--fill-missing VALUE", out)
+		self.assertFalse(os.path.exists(os.path.join(d, "out.zarr")))
+		out = self.lautools("scan.h5", "out.zarr", "--fill-missing", "0", cwd=d)
+		self.assertIn("1 null frames [1]", out)
+		img = zarr.open_group(os.path.join(d, "out.zarr"), mode="r")["img"][:]
+		expected = frames[np.array(keys) == 0].copy()
+		expected[1] = 0
+		np.testing.assert_array_equal(img, expected)
+
+	def test_fix_corrupted_h5(self):
+		import h5py
+		d = os.path.join(self.tmp.name, "corrupt")
+		keys, frames = make_petra_test_data.make(d)
+		with h5py.File(os.path.join(d, "scan.h5"), "a") as h5:  # the images and the last refs are missing from the HDF5
+			data = h5["entry/scan/data"]
+			for name in ("image_key", "image_file", "s_rot"):
+				for part in ("value", "time"):
+					v = data[f"{name}/{part}"][:5]
+					del data[f"{name}/{part}"]
+					data.create_dataset(f"{name}/{part}", data=v)
+		self.lautools("scan.h5", "out.zarr", "--fix-corrupted-h5", "-j", "0", cwd=d)
 		np.testing.assert_array_equal(zarr.open_group(os.path.join(d, "out.zarr"), mode="r")["img"][:], frames[5:])
 
 

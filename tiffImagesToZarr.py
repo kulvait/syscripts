@@ -34,6 +34,7 @@ import sys
 
 
 from denpy import ZARPYRAMID  # OME-NGFF pyramids with plain zarr (replaces ome_zarr)
+from denpy import ZARZS  # zip store that threads write in parallel
 
 import re
 from denpy import UTILS
@@ -454,7 +455,7 @@ def writeZarrFile(inputTifFiles, zarrFile, *,
         print(codec)
     # Create the base resolution level (s0)
     if zipStore or ARG.outputZarr.endswith('.zip'):
-        store = zarr.storage.ZipStore(ARG.outputZarr, mode='w')
+        store = ZARZS.ZipStore(ARG.outputZarr, mode='w')  # threads write their chunks in parallel
     else:
         store = ARG.outputZarr
     # Create Zarr array
